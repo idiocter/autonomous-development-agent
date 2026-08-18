@@ -1,61 +1,57 @@
 # Autonomous Software Development Agent
 
-Takes a GitHub issue and works on it end-to-end: understand repo -> plan -> code -> test -> debug -> commit/PR.
+An AI agent that resolves GitHub issues end to end: it reads the issue, understands the
+codebase, plans a fix, writes the code, runs the tests in an isolated sandbox, debugs
+failures, and opens a pull request.
 
-See [`plan.md`](./plan.md) for the full architecture and phased build order. All 6 phases are code-complete;
-see plan.md for exactly what's been verified against real local infra vs. what's blocked on credentials.
+## Features
+
+- **Full issue-to-PR loop** — Planner, Coding, Testing, and Debugging agents built on LangGraph
+- **Isolated test execution** — code runs in a resource-limited, network-disabled Docker sandbox
+- **Codebase-grounded** — retrieval-augmented generation (RAG) over the target repo so changes are based on real existing code, not guesses
+- **Real GitHub integration** — branch/commit/push, idempotent PR creation, and a webhook server that triggers on a labeled issue
+- **Loop-safety guards** — iteration cap, repeated-failure detection, cost-budget tracking, and wall-clock timeout, so a stuck run escalates to a human instead of looping forever
+- **Job persistence** — every run's plan, diffs, test results, and cost are recorded in Postgres
+
+## Tech stack
+
+Python, LangGraph, FastAPI, Anthropic API, Docker, PostgreSQL + pgvector, SQLAlchemy/Alembic, PyGithub.
 
 ## Setup
 
 ```bash
 uv sync --extra dev --extra github --extra db --extra sandbox --extra rag --extra api
 cp .env.example .env
-# fill in ANTHROPIC_API_KEY (required for everything), GITHUB_TOKEN (Phase 2+),
-# GITHUB_WEBHOOK_SECRET (Phase 5+) in .env
-```
+# add ANTHROPIC_API_KEY at minimum; GITHUB_TOKEN for GitHub-backed runs
 
-### Postgres + pgvector
-
-```bash
-docker-compose up -d postgres   # remaps host port to 5433 -- 5432 may already be in use locally
+docker-compose up -d postgres
 uv run alembic upgrade head
-```
 
-### Docker sandbox image (Phase 3+)
-
-```bash
 docker build -f docker/Dockerfile.sandbox -t autonomous-dev-agent-sandbox:latest docker/
 ```
 
-## Demos
+## Usage
 
-**Phase 1 -- local toy repo, no GitHub/Docker/Postgres required for the graph shape itself:**
+Run against a local repo:
+
 ```bash
-uv run python scripts/run_local_job.py --repo tests/fixtures/toy_repo --issue "Fix the off-by-one bug in calculate_total()"
+uv run python scripts/run_local_job.py --repo path/to/repo --issue "Description of the bug or feature"
 ```
 
-**Phase 2 -- real GitHub issue, opens a real PR** (needs `GITHUB_TOKEN` + a scratch/test repo):
+Run against a real GitHub issue (opens a real PR — point this at a repo you control):
+
 ```bash
 uv run python scripts/run_github_job.py --repo owner/repo --issue 42
 ```
 
-**Phase 4 -- index a repo into the RAG vector store:**
-```bash
-uv run python scripts/index_repo.py --repo tests/fixtures/toy_repo --repo-url toy-repo-demo
-```
+Run the webhook server:
 
-**Phase 5 -- run the FastAPI webhook server:**
 ```bash
 uv run uvicorn src.api.main:app --reload
-# GET /health, GET /jobs, GET /jobs/{id}, GET /jobs/{id}/events (SSE), POST /webhooks/github
 ```
-Use ngrok or smee.io to relay real GitHub webhook deliveries to `localhost:8000/webhooks/github` for local dev.
 
 ## Tests
 
 ```bash
 uv run pytest
 ```
-Requires the Postgres container running (`docker-compose up -d postgres`) and the sandbox image built for
-the full suite; tests that need Docker/Postgres skip gracefully if those aren't available, except the
-integration suite which assumes Postgres is reachable.
