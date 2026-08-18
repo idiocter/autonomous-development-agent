@@ -37,16 +37,42 @@ def _is_denylisted(rel_path: str) -> bool:
     return any(pattern in name for pattern in _SECRET_DENYLIST_SUBSTRINGS)
 
 
+def _is_git_root(repo_root: str) -> bool:
+    """True only if repo_root is itself the top level of a git work tree.
+
+    Checking `git ls-files` alone is NOT enough: a job workspace nested
+    inside some *other* git repo (e.g. workspaces/job-*/ under this
+    project) makes `git ls-files` exit 0 while returning nothing, because
+    the outer repo gitignores that path. That silently indexes zero files
+    instead of falling back to a directory walk.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+    return Path(result.stdout.strip()).resolve() == Path(repo_root).resolve()
+
+
 def _tracked_files(repo_root: str) -> list[Path]:
     root = Path(repo_root)
-    try:
+    candidates: list[Path] = []
+
+    if _is_git_root(repo_root):
         result = subprocess.run(
             ["git", "ls-files"], cwd=repo_root, capture_output=True, text=True, check=True
         )
         candidates = [root / p for p in result.stdout.splitlines()]
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        # Not a git repo (e.g. the toy-repo fixture) -- fall back to a plain
-        # walk, still respecting the skip-dir denylist.
+
+    if not candidates:
+        # Not a git repo of its own (the toy-repo fixture, a job workspace
+        # nested in another repo), or a git repo with nothing committed yet
+        # -- walk the directory instead, still honoring the skip-dir denylist.
         candidates = [p for p in root.rglob("*") if p.is_file()]
 
     return [
@@ -60,6 +86,13 @@ def _tracked_files(repo_root: str) -> list[Path]:
 
 
 def _repo_head_sha(repo_root: str) -> str:
+    """Same nesting caveat as _tracked_files: without the _is_git_root guard
+    a workspace inside another repo resolves that *outer* repo's HEAD, so
+    index_repo's stale-check would short-circuit on an unrelated SHA (and
+    every job workspace would report the same one).
+    """
+    if not _is_git_root(repo_root):
+        return "no-git"
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=repo_root, capture_output=True, text=True, check=True

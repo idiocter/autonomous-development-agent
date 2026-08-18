@@ -4,6 +4,7 @@ model (no external API key needed for either).
 """
 
 import shutil
+import subprocess
 import uuid
 
 from sqlalchemy import select
@@ -14,6 +15,55 @@ from src.rag.indexer import index_repo
 from src.rag.retriever import rag_retrieve
 
 _SCRATCH_ROOT = "workspaces/test-scratch-rag"
+
+
+async def test_index_repo_indexes_workspace_nested_inside_another_git_repo(tmp_path):
+    """Regression: a job workspace nested inside an unrelated git repo that
+    gitignores it made `git ls-files` exit 0 with empty output, so the
+    indexer silently indexed nothing instead of walking the directory.
+    """
+    outer = tmp_path / "outer_repo"
+    outer.mkdir()
+    subprocess.run(["git", "init"], cwd=outer, check=True, capture_output=True)
+    (outer / ".gitignore").write_text("workspaces/\n")
+
+    nested = outer / "workspaces" / "job-abc123" / "toy_repo"
+    nested.mkdir(parents=True)
+    shutil.copytree("tests/fixtures/toy_repo", nested, dirs_exist_ok=True)
+
+    repo_url = f"test-nested-{uuid.uuid4().hex[:8]}"
+    async with async_session_factory() as session:
+        count = await index_repo(session, repo_url, str(nested))
+
+        result = await session.execute(select(CodeChunk).where(CodeChunk.repo_url == repo_url))
+        rows = result.scalars().all()
+
+    assert count > 0, "nested workspace indexed zero files -- git ls-files fallback regressed"
+    assert any(r.file_path == "calculator.py" for r in rows)
+
+
+async def test_nested_workspace_head_sha_does_not_leak_from_outer_repo(tmp_path):
+    """Regression: _repo_head_sha resolved the *outer* repo's HEAD for a
+    nested workspace, so index_repo's stale-check short-circuited on an
+    unrelated SHA and never picked up edits (and every workspace shared
+    one SHA). Two distinct workspaces must not report the same sha.
+    """
+    from src.rag.indexer import _repo_head_sha
+
+    outer = tmp_path / "outer_repo"
+    outer.mkdir()
+    subprocess.run(["git", "init"], cwd=outer, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=outer, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=outer, check=True)
+    (outer / "f.txt").write_text("x")
+    subprocess.run(["git", "add", "-A"], cwd=outer, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=outer, check=True, capture_output=True)
+
+    nested = outer / "workspaces" / "job-abc" / "repo"
+    nested.mkdir(parents=True)
+
+    assert _repo_head_sha(str(nested)) == "no-git"
+    assert _repo_head_sha(str(outer)) != "no-git"  # a real git root still resolves
 
 
 async def test_index_repo_creates_chunks_and_meta():
