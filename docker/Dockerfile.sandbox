@@ -1,0 +1,14 @@
+# Project-agnostic base sandbox image: Python + pytest pre-installed for
+# the toy-repo demo. Real target repos should install their own deps fresh
+# from their lockfile inside the container per-run (`pip install -r
+# requirements.txt`, `npm ci`) rather than relying on this baseline --
+# that's a Phase 4+ hardening item, not required for the toy-repo demo.
+FROM python:3.12-slim
+
+RUN useradd --create-home --uid 1000 sandboxuser \
+    && pip install --no-cache-dir pytest
+
+USER sandboxuser
+WORKDIR /workspace
+
+CMD ["sleep", "infinity"]
