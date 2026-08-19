@@ -17,6 +17,7 @@ from github.PullRequest import PullRequest
 from github.Repository import Repository
 
 from src.github_integration.auth import get_auth_provider
+from src.security.prompt_guard import redact_secrets
 
 BOT_NAME = "autonomous-dev-agent[bot]"
 BOT_EMAIL = "autonomous-dev-agent-bot@users.noreply.github.com"
@@ -122,12 +123,12 @@ def create_pr(
     existing = find_existing_pr(repo, head)
     if existing is not None:
         return existing
-    return repo.create_pull(title=title, body=body, head=head, base=base)
+    return repo.create_pull(title=title, body=redact_secrets(body), head=head, base=base)
 
 
 def comment_on_issue(repo: Repository, issue_number: int, body: str) -> None:
     issue = repo.get_issue(issue_number)
-    issue.create_comment(body)
+    issue.create_comment(redact_secrets(body))
 
 
 def add_label(repo: Repository, issue_number: int, label: str) -> None:

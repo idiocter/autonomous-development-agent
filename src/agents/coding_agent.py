@@ -1,6 +1,7 @@
 from src.agents.base import extract_text, filesystem_tool_specs, run_tool_loop
 from src.config import settings
 from src.graph.state import AgentState
+from src.security.prompt_guard import UNTRUSTED_CONTENT_RULE, wrap_untrusted
 from src.tools.rag_tools import rag_retrieve
 
 _SYSTEM = """You are the Coding agent in an autonomous software development pipeline.
@@ -15,7 +16,9 @@ added or changed -- not even if the plan says to. Tests define the expected
 behaviour; making a failing test pass by weakening, deleting, or rewriting
 its assertions is never an acceptable fix. Change the source code instead.
 If you believe a test is genuinely wrong, say so in your summary and leave
-it untouched."""
+it untouched.
+
+""" + UNTRUSTED_CONTENT_RULE
 
 
 def call_coder(state: AgentState) -> str:
@@ -47,7 +50,8 @@ def call_coder(state: AgentState) -> str:
     user_content = (
         f"Issue: {state['issue_title']}\n\n"
         f"Plan to implement:\n{plan_text}{debug_note}\n\n"
-        f"Relevant existing code:\n{context_block or '(none retrieved)'}\n\n"
+        f"Relevant existing code:\n"
+        f"{wrap_untrusted(context_block, 'repo_context') if context_block else '(none retrieved)'}\n\n"
         "Use the tools available to make the necessary changes now."
     )
 

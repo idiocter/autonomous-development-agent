@@ -7,7 +7,24 @@ call can't escape the workspace via `..` or a symlink.
 
 from pathlib import Path
 
-_DENYLIST_PATTERNS = (".env", ".env.", "id_rsa", ".pem")
+# Independent of .gitignore -- a repo may well not ignore its own secrets, and
+# the point is to stop the agent reading them even when told to.
+#
+# Split by match type on purpose: the previous version tested every pattern
+# with `startswith`, so suffix entries like ".pem" silently never matched and
+# server.pem / key.p12 / credentials.json were all readable.
+_DENY_PREFIXES = (".env", "id_rsa", "id_ed25519", ".npmrc", ".pypirc", ".netrc")
+_DENY_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".keystore", ".jks")
+_DENY_EXACT = ("credentials.json", "service_account.json", "secrets.yaml", "secrets.yml")
+
+
+def is_denylisted(name: str) -> bool:
+    lowered = name.lower()
+    return (
+        lowered.startswith(_DENY_PREFIXES)
+        or lowered.endswith(_DENY_SUFFIXES)
+        or lowered in _DENY_EXACT
+    )
 
 
 def _resolve_scoped(repo_root: str, path: str) -> Path:
@@ -15,7 +32,9 @@ def _resolve_scoped(repo_root: str, path: str) -> Path:
     candidate = (root / path).resolve()
     if not candidate.is_relative_to(root):
         raise ValueError(f"path escapes repo workspace: {path}")
-    if any(part.startswith(_DENYLIST_PATTERNS) for part in (candidate.name,)):
+    # Check every path component, not just the filename -- otherwise
+    # `secrets/prod.json` slips past a filename-only test.
+    if any(is_denylisted(part) for part in candidate.relative_to(root).parts):
         raise ValueError(f"refusing to touch denylisted path: {path}")
     return candidate
 
@@ -44,7 +63,13 @@ def str_replace(repo_root: str, path: str, old_str: str, new_str: str) -> None:
 
 def list_dir(repo_root: str, path: str = ".") -> list[str]:
     target = _resolve_scoped(repo_root, path)
-    return sorted(p.name + ("/" if p.is_dir() else "") for p in target.iterdir())
+    # Denylisted entries are hidden, not just unreadable -- surfacing
+    # "there is a .env here" invites the model to go after it.
+    return sorted(
+        p.name + ("/" if p.is_dir() else "")
+        for p in target.iterdir()
+        if not is_denylisted(p.name)
+    )
 
 
 def list_repo_structure(repo_root: str) -> list[str]:
@@ -52,6 +77,12 @@ def list_repo_structure(repo_root: str) -> list[str]:
     skip_dirs = {".git", "__pycache__", ".venv", "node_modules"}
     paths = []
     for p in root.rglob("*"):
-        if p.is_file() and not any(part in skip_dirs for part in p.parts):
-            paths.append(str(p.relative_to(root)))
+        if not p.is_file():
+            continue
+        rel = p.relative_to(root)
+        if any(part in skip_dirs for part in p.parts):
+            continue
+        if any(is_denylisted(part) for part in rel.parts):
+            continue
+        paths.append(str(rel))
     return sorted(paths)
