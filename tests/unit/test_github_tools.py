@@ -165,3 +165,25 @@ def test_pr_body_has_no_warning_for_source_only_changes():
         test_passed=True,
     )
     assert "WARNING" not in body
+
+
+def test_commit_all_excludes_build_artifacts(local_repo, tmp_path):
+    (tmp_path / "real_change.py").write_text("x = 1\n")
+    cache = tmp_path / "__pycache__"
+    cache.mkdir()
+    (cache / "mod.cpython-312.pyc").write_bytes(b"\x00\x01")
+    (tmp_path / "stray.pyc").write_bytes(b"\x00\x01")
+
+    assert commit_all(local_repo, "feat: real change") is True
+
+    committed = local_repo.git.show("--name-only", "--pretty=format:", "HEAD").split()
+    assert "real_change.py" in committed
+    assert not any("__pycache__" in f or f.endswith(".pyc") for f in committed)
+
+
+def test_commit_all_returns_false_when_only_artifacts_changed(local_repo, tmp_path):
+    cache = tmp_path / "__pycache__"
+    cache.mkdir()
+    (cache / "mod.cpython-312.pyc").write_bytes(b"\x00\x01")
+
+    assert commit_all(local_repo, "should not commit") is False
