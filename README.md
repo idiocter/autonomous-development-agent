@@ -7,6 +7,22 @@ An AI agent that resolves GitHub issues end to end: it reads the issue, understa
 codebase, plans a fix, writes the code, runs the tests in an isolated sandbox, debugs
 failures, and opens a pull request.
 
+## What it does
+
+You point it at a GitHub issue. It then:
+
+1. **Clones the repo** and indexes the codebase into a vector database
+2. **Retrieves the relevant code** so it edits real functions rather than guessing at them
+3. **Plans** the fix — which files to touch and what to change
+4. **Writes** the code
+5. **Runs the tests** inside a locked-down Docker container — no network, capped memory and CPU
+6. **Debugs and retries** if tests fail, reading the traceback to form a root-cause hypothesis
+7. **Commits, pushes, and opens a PR** on a dedicated branch — it never auto-merges
+8. **Escalates to a human** if it can't get tests passing, instead of looping forever
+
+It will not edit your tests to make them pass, it stops if it exceeds a cost or time
+budget, and it ignores instructions embedded in issue text by third parties.
+
 ## Features
 
 - **Full issue-to-PR loop** — Planner, Coding, Testing, and Debugging agents built on LangGraph
