@@ -16,6 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.agents.usage import get_job_budget, start_job_budget  # noqa: E402
 from src.config import settings  # noqa: E402
 from src.graph.build_graph import build_graph  # noqa: E402
 from src.graph.state import AgentState  # noqa: E402
@@ -83,6 +84,11 @@ def main() -> None:
         "pr_url": None,
     }
 
+    # Without this the ContextVar budget is unset, which makes record_usage a
+    # no-op AND is_over_budget() always False -- i.e. loop-safety guard #3
+    # (cost budget) is silently inactive on the CLI path, not just untracked.
+    start_job_budget(initial_state["job_id"], settings.job_cost_budget_usd)
+
     graph = build_graph()
     final_state = graph.invoke(initial_state, config={"recursion_limit": 50})
 
@@ -99,7 +105,34 @@ def main() -> None:
     if final_state["debug_analysis"]:
         print(f"last debug analysis:\n{final_state['debug_analysis']}")
 
+    _print_usage()
     _print_diff(working_repo, original_repo)
+
+
+def _print_usage() -> None:
+    budget = get_job_budget()
+    if budget is None:
+        return
+
+    print("\n--- token usage ---")
+    print(f"{'model':<20}{'calls':>7}{'in':>12}{'out':>10}{'usd':>12}")
+    by_model: dict[str, dict[str, float]] = {}
+    for call in budget.calls:
+        agg = by_model.setdefault(call["model"], {"calls": 0, "in": 0, "out": 0, "usd": 0.0})
+        agg["calls"] += 1
+        agg["in"] += call["input_tokens"]
+        agg["out"] += call["output_tokens"]
+        agg["usd"] += call["cost_usd"]
+    for model, agg in sorted(by_model.items()):
+        print(
+            f"{model:<20}{int(agg['calls']):>7}{int(agg['in']):>12,}"
+            f"{int(agg['out']):>10,}{agg['usd']:>12.6f}"
+        )
+    print(
+        f"{'TOTAL':<20}{len(budget.calls):>7}{budget.total_input_tokens:>12,}"
+        f"{budget.total_output_tokens:>10,}{budget.total_cost_usd:>12.6f}"
+    )
+    print(f"budget: ${budget.total_cost_usd:.6f} of ${budget.budget_usd:.2f} cap")
 
 
 if __name__ == "__main__":
