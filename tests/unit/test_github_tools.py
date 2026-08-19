@@ -123,3 +123,45 @@ def test_build_escalation_comment_includes_debug_analysis():
     )
     assert "off-by-one" in comment
     assert "attempt 1" in comment
+
+
+def test_is_test_file_detects_common_conventions():
+    from src.tools.github_tools import is_test_file
+
+    assert is_test_file("test_calculator.py")
+    assert is_test_file("src/tests/helpers.py")
+    assert is_test_file("pkg/foo_test.go")
+    assert is_test_file("web/__tests__/app.js")
+    assert is_test_file("ui/Button.test.tsx") or is_test_file("ui/Button.test.ts")
+
+
+def test_is_test_file_ignores_ordinary_sources():
+    from src.tools.github_tools import is_test_file
+
+    assert not is_test_file("calculator.py")
+    assert not is_test_file("src/latest.py")       # contains "test" but isn't one
+    assert not is_test_file("src/contest/main.py")  # substring, not a path part
+
+
+def test_pr_body_warns_when_tests_were_modified():
+    body = build_pr_body(
+        issue_number=7,
+        plan_summary="- fix bug",
+        files_changed=["calculator.py", "test_calculator.py"],
+        test_command="pytest -q",
+        test_passed=True,
+    )
+    assert "WARNING" in body
+    assert "modifies test files" in body
+    assert "test_calculator.py" in body
+
+
+def test_pr_body_has_no_warning_for_source_only_changes():
+    body = build_pr_body(
+        issue_number=7,
+        plan_summary="- fix bug",
+        files_changed=["calculator.py"],
+        test_command="pytest -q",
+        test_passed=True,
+    )
+    assert "WARNING" not in body

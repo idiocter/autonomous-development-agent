@@ -7,6 +7,7 @@ what get_auth_provider() returns.
 """
 
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 
 import git
 from github import Github
@@ -113,6 +114,20 @@ def add_label(repo: Repository, issue_number: int, label: str) -> None:
         pass
 
 
+def is_test_file(path: str) -> bool:
+    """Heuristic used to flag test edits for human review. Deliberately
+    broad -- a false positive costs a reviewer one glance, a false negative
+    lets a weakened assertion through unnoticed.
+    """
+    name = PurePosixPath(path).name.lower()
+    parts = {p.lower() for p in PurePosixPath(path).parts}
+    return (
+        name.startswith("test_")
+        or name.endswith(("_test.py", "_test.go", ".test.js", ".test.ts", ".spec.js", ".spec.ts"))
+        or bool({"tests", "test", "__tests__", "spec"} & parts)
+    )
+
+
 def build_pr_body(
     *,
     issue_number: int,
@@ -123,9 +138,28 @@ def build_pr_body(
 ) -> str:
     files_list = "\n".join(f"- `{f}`" for f in files_changed) or "(no files listed)"
     status = "✅ passing" if test_passed else "⚠️ not verified"
+
+    # The agents are instructed never to touch tests, but instructions aren't
+    # enforcement -- surface it loudly rather than trusting the prompt, since
+    # "made the test pass by editing the test" is the failure mode that most
+    # easily slips through review.
+    touched_tests = [f for f in files_changed if is_test_file(f)]
+    warning = ""
+    if touched_tests:
+        listed = "\n".join(f"- `{f}`" for f in touched_tests)
+        warning = (
+            "\n> [!WARNING]\n"
+            "> **This PR modifies test files.** The agent is instructed not to, so\n"
+            "> review these closely and confirm the change isn't just making a\n"
+            "> failing assertion pass:\n"
+            + "\n".join(f"> {line}" for line in listed.splitlines())
+            + "\n"
+        )
+
     return (
         f"Resolves #{issue_number}.\n\n"
-        f"**This PR was opened autonomously by autonomous-dev-agent.**\n\n"
+        f"**This PR was opened autonomously by autonomous-dev-agent.**\n"
+        f"{warning}\n"
         f"### Plan\n{plan_summary}\n\n"
         f"### Files changed\n{files_list}\n\n"
         f"### Tests\n`{test_command}` -- {status}\n"
