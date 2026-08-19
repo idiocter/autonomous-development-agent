@@ -1,31 +1,43 @@
-"""Shared Anthropic client wrapper and two call patterns used by every agent:
+"""Shared OpenAI client wrapper and two call patterns used by every agent:
 
 - `call_structured`: single-shot, forces the model to respond via exactly one
   tool call matching a JSON schema -- used where we want a reliable typed
   result (e.g. the Planner's list of plan steps), not prose.
-- `run_tool_loop`: a generic agentic loop that executes any tool_use blocks
+- `run_tool_loop`: a generic agentic loop that executes any tool calls
   against provided Python handlers and feeds results back until the model
   stops calling tools -- used where the agent needs to read/edit files
   (Coding, Debugging).
+
+Differences from the Anthropic implementation on `main`, since they bite:
+  - the system prompt is a message with role="system", not a separate param
+  - `tool_calls[].function.arguments` is a JSON *string* needing json.loads,
+    not an already-decoded dict
+  - tool results go back as separate role="tool" messages keyed by
+    tool_call_id, rather than tool_result blocks inside one user message
+  - usage fields are prompt_tokens/completion_tokens, not input/output_tokens
+    (get this wrong and the cost-budget loop guard silently records zero)
 """
 
+import json
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, Callable
 
-import anthropic
+from openai import OpenAI
 
 from src.agents.usage import is_over_budget, record_usage
 from src.config import settings
 from src.tools.filesystem_tools import list_dir, read_file, str_replace, write_file
 
-_client: anthropic.Anthropic | None = None
+_client: OpenAI | None = None
 
 
-def get_client() -> anthropic.Anthropic:
+def get_client() -> OpenAI:
     global _client
     if _client is None:
-        _client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        if not settings.openai_api_key:
+            raise RuntimeError("OPENAI_API_KEY is not set in .env")
+        _client = OpenAI(api_key=settings.openai_api_key)
     return _client
 
 
@@ -47,24 +59,30 @@ def call_structured(
     max_tokens: int = 4096,
 ) -> dict[str, Any]:
     client = get_client()
-    response = client.messages.create(
+    response = client.chat.completions.create(
         model=model,
         max_tokens=max_tokens,
-        system=system,
-        messages=[{"role": "user", "content": user_content}],
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_content},
+        ],
         tools=[
             {
-                "name": output_tool_name,
-                "description": "Submit the final structured result.",
-                "input_schema": output_schema,
+                "type": "function",
+                "function": {
+                    "name": output_tool_name,
+                    "description": "Submit the final structured result.",
+                    "parameters": output_schema,
+                },
             }
         ],
-        tool_choice={"type": "tool", "name": output_tool_name},
+        tool_choice={"type": "function", "function": {"name": output_tool_name}},
     )
-    record_usage(model, response.usage.input_tokens, response.usage.output_tokens)
-    for block in response.content:
-        if block.type == "tool_use" and block.name == output_tool_name:
-            return block.input
+    record_usage(model, response.usage.prompt_tokens, response.usage.completion_tokens)
+
+    for call in response.choices[0].message.tool_calls or []:
+        if call.function.name == output_tool_name:
+            return json.loads(call.function.arguments)
     raise RuntimeError("model did not return structured output")
 
 
@@ -79,11 +97,18 @@ def run_tool_loop(
 ) -> list[dict[str, Any]]:
     client = get_client()
     tool_defs = [
-        {"name": t.name, "description": t.description, "input_schema": t.input_schema} for t in tools
+        {
+            "type": "function",
+            "function": {"name": t.name, "description": t.description, "parameters": t.input_schema},
+        }
+        for t in tools
     ]
     handlers = {t.name: t.handler for t in tools}
 
-    messages: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
+    messages: list[Any] = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user_content},
+    ]
 
     for _ in range(max_turns):
         if is_over_budget():
@@ -92,51 +117,54 @@ def run_tool_loop(
             # turn allowance before the caller notices.
             break
 
-        response = client.messages.create(
+        response = client.chat.completions.create(
             model=model,
             max_tokens=max_tokens,
-            system=system,
             messages=messages,
             tools=tool_defs,
         )
-        record_usage(model, response.usage.input_tokens, response.usage.output_tokens)
-        messages.append({"role": "assistant", "content": response.content})
+        record_usage(model, response.usage.prompt_tokens, response.usage.completion_tokens)
 
-        tool_uses = [b for b in response.content if b.type == "tool_use"]
-        if not tool_uses:
+        message = response.choices[0].message
+        # The assistant message carrying tool_calls must be appended before
+        # the corresponding role="tool" replies, or the API rejects them as
+        # orphaned tool_call_ids.
+        messages.append(message)
+
+        tool_calls = message.tool_calls or []
+        if not tool_calls:
             break
 
-        tool_results = []
-        for block in tool_uses:
-            handler = handlers.get(block.name)
+        for call in tool_calls:
+            handler = handlers.get(call.function.name)
             try:
-                result = handler(**block.input) if handler else f"unknown tool: {block.name}"
+                args = json.loads(call.function.arguments or "{}")
+                result = handler(**args) if handler else f"unknown tool: {call.function.name}"
                 content = "ok" if result is None else str(result)
-                is_error = False
             except Exception as exc:  # noqa: BLE001 -- fed back to the model, not raised
                 content = f"error: {exc}"
-                is_error = True
-            tool_results.append(
-                {
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": content,
-                    "is_error": is_error,
-                }
-            )
-        messages.append({"role": "user", "content": tool_results})
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
 
     return messages
 
 
-def extract_text(messages: list[dict[str, Any]]) -> str:
-    return "".join(
-        block.text
-        for message in messages
-        if message["role"] == "assistant"
-        for block in message["content"]
-        if getattr(block, "type", None) == "text"
-    )
+def extract_text(messages: list[Any]) -> str:
+    """Concatenates assistant prose across the loop. The list is a mix of
+    plain dicts (the seeded system/user messages, and role="tool" replies)
+    and OpenAI message objects, so this handles both shapes rather than
+    assuming one -- and skips tool-call-only turns, whose content is None.
+    """
+    parts: list[str] = []
+    for message in messages:
+        role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
+        if role != "assistant":
+            continue
+        content = (
+            message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
+        )
+        if content:
+            parts.append(content)
+    return "".join(parts)
 
 
 def filesystem_tool_specs(repo_root: str) -> list[ToolSpec]:

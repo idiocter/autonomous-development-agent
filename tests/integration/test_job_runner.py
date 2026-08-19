@@ -1,7 +1,7 @@
 """Exercises job_runner.run_job's wall-clock timeout and Postgres
 persistence against the real Postgres container (`docker-compose up -d
 postgres`), with a mocked graph.invoke since there's no live
-ANTHROPIC_API_KEY in this environment yet to run the real LangGraph nodes
+OPENAI_API_KEY in this environment yet to run the real LangGraph nodes
 end-to-end.
 """
 
@@ -89,7 +89,7 @@ async def test_run_job_persists_cost_from_usage_tracker(monkeypatch):
 
     class SpendingGraph:
         def invoke(self, state, config=None):
-            record_usage("claude-opus-5", input_tokens=10_000, output_tokens=5_000)
+            record_usage("gpt-4o", input_tokens=10_000, output_tokens=5_000)
             return {**state, "status": "done", "iteration_count": 1}
 
     monkeypatch.setattr(job_runner, "build_graph", lambda: SpendingGraph())

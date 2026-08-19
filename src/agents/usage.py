@@ -5,9 +5,11 @@ counter would notice. Uses a ContextVar so every agent call site
 (call_structured, run_tool_loop) can record usage without threading a
 tracker object through every function signature.
 
-Pricing below is Anthropic's published per-million-token rate as of this
-project's initial build -- verify against https://www.anthropic.com/pricing
+Pricing below is OpenAI's published per-million-token rate as of this
+project's initial build -- verify against https://openai.com/api/pricing
 before relying on this for real budget enforcement, since prices change.
+An unrecognized model name falls back to the mid-tier rate rather than
+zero, so a model swap can't silently disable the budget guard.
 """
 
 from contextvars import ContextVar
@@ -15,11 +17,11 @@ from dataclasses import dataclass, field
 
 # USD per million tokens: (input, output)
 PRICING_PER_MILLION_TOKENS: dict[str, tuple[float, float]] = {
-    "claude-opus-5": (15.0, 75.0),
-    "claude-sonnet-5": (3.0, 15.0),
-    "claude-haiku-4-5-20251001": (0.80, 4.0),
+    "gpt-4o": (2.50, 10.0),
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4-turbo": (10.0, 30.0),
 }
-_DEFAULT_PRICING = (3.0, 15.0)  # fall back to Sonnet-tier pricing for unrecognized model strings
+_DEFAULT_PRICING = (2.50, 10.0)  # fall back to gpt-4o-tier pricing for unrecognized model strings
 
 
 @dataclass

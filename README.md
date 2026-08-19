@@ -1,5 +1,8 @@
 # Autonomous Software Development Agent
 
+> **Branch note:** this `openai` branch runs on the OpenAI API (GPT models).
+> The `main` branch is the Anthropic/Claude version. Only the LLM layer differs.
+
 An AI agent that resolves GitHub issues end to end: it reads the issue, understands the
 codebase, plans a fix, writes the code, runs the tests in an isolated sandbox, debugs
 failures, and opens a pull request.
@@ -15,14 +18,14 @@ failures, and opens a pull request.
 
 ## Tech stack
 
-Python, LangGraph, FastAPI, Anthropic API, Docker, PostgreSQL + pgvector, SQLAlchemy/Alembic, PyGithub.
+Python, LangGraph, FastAPI, OpenAI API, Docker, PostgreSQL + pgvector, SQLAlchemy/Alembic, PyGithub.
 
 ## Setup
 
 ```bash
 uv sync --extra dev --extra github --extra db --extra sandbox --extra rag --extra api
 cp .env.example .env
-# add ANTHROPIC_API_KEY at minimum; GITHUB_TOKEN for GitHub-backed runs
+# add OPENAI_API_KEY at minimum; GITHUB_TOKEN for GitHub-backed runs
 
 docker-compose up -d postgres
 uv run alembic upgrade head

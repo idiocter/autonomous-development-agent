@@ -1,6 +1,6 @@
 """Phase 2 CLI: runs the full agent loop against a real GitHub issue --
 clones the repo, works the issue, and opens a real PR. Needs GITHUB_TOKEN
-and ANTHROPIC_API_KEY set in .env, and a scratch/test repo to target (never
+and OPENAI_API_KEY set in .env, and a scratch/test repo to target (never
 point this at a repo you care about until you trust it).
 
 Usage:

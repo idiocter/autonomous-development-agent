@@ -4,12 +4,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    anthropic_api_key: str = ""
+    openai_api_key: str = ""
 
-    planner_model: str = "claude-opus-5"
-    coder_model: str = "claude-sonnet-5"
-    testing_model: str = "claude-sonnet-5"
-    debugger_model: str = "claude-opus-5"
+    # Override in .env to whatever your account has access to -- nothing in
+    # the code depends on these specific model names. Heavier models are
+    # assigned to planning/debugging, cheaper ones to mechanical steps.
+    planner_model: str = "gpt-4o"
+    coder_model: str = "gpt-4o"
+    testing_model: str = "gpt-4o-mini"
+    debugger_model: str = "gpt-4o"
 
     max_iterations: int = 6
     job_timeout_seconds: int = 2700

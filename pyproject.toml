@@ -5,7 +5,7 @@ description = "Autonomous software development agent: GitHub issue -> plan -> co
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "langgraph>=0.2",
-    "anthropic>=0.40",
+    "openai>=1.40",
     "pydantic>=2",
     "pydantic-settings>=2",
     "python-dotenv>=1.0",

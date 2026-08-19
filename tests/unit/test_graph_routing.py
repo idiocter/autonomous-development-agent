@@ -52,7 +52,7 @@ def test_route_retry_on_different_failure_signatures():
 
 def test_route_give_up_when_over_cost_budget():
     usage.start_job_budget("job-routing-test", budget_usd=0.001)
-    usage.record_usage("claude-opus-5", input_tokens=100_000, output_tokens=100_000)
+    usage.record_usage("gpt-4o", input_tokens=100_000, output_tokens=100_000)
 
     state = _state(iteration_count=1, max_iterations=6)
     assert route_after_test(state) == "give_up"
