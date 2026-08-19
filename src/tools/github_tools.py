@@ -58,10 +58,36 @@ def create_work_branch(repo: git.Repo, base_branch: str, work_branch: str) -> No
         repo.git.checkout("-b", work_branch)
 
 
+# Build artifacts the sandbox test run leaves behind in the workspace. A
+# blind `git add -A` sweeps these into the PR when the target repo has no
+# .gitignore covering them -- observed for real: a first live PR carried two
+# __pycache__/*.pyc files alongside the one-line fix. Unstaged rather than
+# .gitignore'd, since writing a .gitignore into someone's repo is a change
+# they didn't ask for.
+_ARTIFACT_PATHSPECS = [
+    ":(glob)**/__pycache__/**",
+    ":(glob)**/*.py[co]",
+    ":(glob)**/.pytest_cache/**",
+    ":(glob)**/.mypy_cache/**",
+    ":(glob)**/.ruff_cache/**",
+    ":(glob)**/.DS_Store",
+    ":(glob)**/node_modules/**",
+]
+
+
 def commit_all(repo: git.Repo, message: str) -> bool:
     """Returns False if there was nothing to commit (working tree clean)."""
     repo.git.add(A=True)
-    if not repo.is_dirty(untracked_files=True) and not repo.index.diff("HEAD"):
+
+    # Drop artifacts back out of the index. `git reset -- <pathspec>` is a
+    # no-op when nothing matches, so this is safe on a clean tree.
+    try:
+        repo.git.reset("--", *_ARTIFACT_PATHSPECS)
+    except git.GitCommandError:
+        # Never let artifact cleanup abort an otherwise valid commit.
+        pass
+
+    if not repo.index.diff("HEAD"):
         return False
     with repo.config_writer() as cfg:
         cfg.set_value("user", "name", BOT_NAME)

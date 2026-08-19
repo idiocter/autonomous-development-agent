@@ -4,6 +4,7 @@ merging is a human action, never automatic.
 """
 
 import git
+import structlog
 
 from src.github_integration.auth import get_auth_provider
 from src.graph.state import AgentState
@@ -16,6 +17,8 @@ from src.tools.github_tools import (
     get_repo,
     push_branch,
 )
+
+logger = structlog.get_logger(__name__)
 
 
 def pr_node(state: AgentState) -> dict:
@@ -59,6 +62,19 @@ def pr_node(state: AgentState) -> dict:
         head=work_branch,
         base=state["base_branch"],
     )
-    comment_on_issue(gh_repo, state["issue_number"], f"Opened {pr.html_url}")
+    # Courtesy backlink only -- the PR already exists by this point, so a
+    # failure here (commonly a token without Issues:write) must not sink an
+    # otherwise successful job and lose the PR URL. Observed for real on the
+    # first live run: the PR was created, then the whole job raised on this
+    # line and reported failure.
+    try:
+        comment_on_issue(gh_repo, state["issue_number"], f"Opened {pr.html_url}")
+    except Exception as exc:  # noqa: BLE001 -- non-fatal, recorded not raised
+        logger.warning(
+            "could not comment PR link back on issue",
+            issue=state["issue_number"],
+            pr_url=pr.html_url,
+            error=str(exc),
+        )
 
     return {"status": "done", "pr_url": pr.html_url, "work_branch": work_branch}
