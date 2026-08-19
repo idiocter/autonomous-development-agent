@@ -3,6 +3,7 @@ import re
 from src.agents.base import extract_text, filesystem_tool_specs, run_tool_loop
 from src.config import settings
 from src.graph.state import AgentState
+from src.security.prompt_guard import UNTRUSTED_CONTENT_RULE, wrap_untrusted
 from src.tools.rag_tools import rag_retrieve
 
 _SYSTEM = """You are the Debugging agent in an autonomous software development pipeline.
@@ -16,7 +17,9 @@ Never modify a test file to make it pass. A failing test means the source
 code is wrong -- weakening, deleting, or rewriting the assertion hides the
 bug rather than fixing it. Fix the source. If you are convinced the test
 itself is wrong, explain why in your summary and leave it untouched so a
-human can decide."""
+human can decide.
+
+""" + UNTRUSTED_CONTENT_RULE
 
 
 def _extract_traceback_query(output: str) -> str:
@@ -51,10 +54,11 @@ def call_debugger(state: AgentState) -> str:
         f"Issue: {state['issue_title']}\n\n"
         f"Failing command: {last_result['command']}\n"
         f"Exit code: {last_result['exit_code']}\n\n"
-        f"stdout:\n{last_result['stdout']}\n\n"
-        f"stderr:\n{last_result['stderr']}\n\n"
+        f"stdout:\n{wrap_untrusted(last_result['stdout'], 'test_stdout')}\n\n"
+        f"stderr:\n{wrap_untrusted(last_result['stderr'], 'test_stderr')}\n\n"
         f"Prior attempts in this job:\n{chr(10).join(history_lines) or '(first attempt)'}\n\n"
-        f"Relevant existing code:\n{context_block or '(none retrieved)'}\n\n"
+        f"Relevant existing code:\n"
+        f"{wrap_untrusted(context_block, 'repo_context') if context_block else '(none retrieved)'}\n\n"
         "Diagnose the root cause and apply a fix using the available tools."
     )
 
