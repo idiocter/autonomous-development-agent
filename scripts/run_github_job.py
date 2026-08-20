@@ -8,6 +8,7 @@ Usage:
 """
 
 import argparse
+import asyncio
 import sys
 import uuid
 from pathlib import Path
@@ -16,8 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.config import settings  # noqa: E402
 from src.github_integration.auth import get_auth_provider  # noqa: E402
-from src.graph.build_graph import build_graph  # noqa: E402
 from src.graph.state import AgentState  # noqa: E402
+from src.worker.job_runner import run_job  # noqa: E402
 from src.logging_config import configure_logging  # noqa: E402
 from src.tools.github_tools import (  # noqa: E402
     clone_repo,
@@ -79,8 +80,10 @@ def main() -> None:
         "pr_url": None,
     }
 
-    graph = build_graph()
-    final_state = graph.invoke(initial_state, config={"recursion_limit": 50})
+    # Same wrapper as the webhook worker path -- this previously bypassed
+    # run_job entirely, so it had neither cost tracking nor the wall-clock
+    # timeout guard, despite being the path that opens real PRs.
+    final_state = asyncio.run(run_job(initial_state, triggered_by="manual:cli"))
 
     print(f"\n--- final status: {final_state['status']} ---")
     if final_state["pr_url"]:

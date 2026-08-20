@@ -8,11 +8,15 @@ unrelated logic.
 import asyncio
 import re
 
+import structlog
+
 from src.db.session import async_session_factory
 from src.graph.state import RetrievedChunk
 from src.rag import retriever as _retriever
 from src.rag.indexer import index_repo
 from src.tools.filesystem_tools import list_repo_structure
+
+logger = structlog.get_logger(__name__)
 
 _SKIP_SUFFIXES = (".pyc", ".png", ".jpg", ".lock")
 
@@ -31,7 +35,14 @@ def rag_retrieve(repo_root: str, query: str, k: int = 8, *, repo_url: str | None
             await index_repo(session, repo_url, repo_root)
             return await _retriever.rag_retrieve(session, repo_url, query, k)
 
-    return asyncio.run(_run())
+    try:
+        return asyncio.run(_run())
+    except Exception as exc:  # noqa: BLE001 -- degrade, don't abort the job
+        # Semantic retrieval needs pgvector; the grep fallback needs nothing.
+        # Worse context beats a dead run -- the agent can still read files
+        # through its own tools.
+        logger.warning("pgvector retrieval unavailable, falling back to grep", error=str(exc))
+        return rag_retrieve_grep(repo_root, query, k)
 
 
 def rag_retrieve_grep(repo_root: str, query: str, k: int = 8) -> list[RetrievedChunk]:
