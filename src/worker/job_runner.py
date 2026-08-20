@@ -26,12 +26,24 @@ exactly what's needed here.
 import asyncio
 import uuid
 
+import structlog
+
 from src.agents.usage import get_job_budget, start_job_budget
 from src.config import settings
 from src.db import crud
 from src.db.session import async_session_factory
 from src.graph.build_graph import build_graph
 from src.graph.state import AgentState
+
+logger = structlog.get_logger(__name__)
+
+
+async def _best_effort(coro_factory, message: str) -> None:
+    """Run a persistence step, downgrading failure to a warning."""
+    try:
+        await coro_factory()
+    except Exception as exc:  # noqa: BLE001 -- observability must not break the run
+        logger.warning(message, error=str(exc))
 
 
 async def run_job(
@@ -40,17 +52,24 @@ async def run_job(
     timeout_s = timeout_s or settings.job_timeout_seconds
     job_uuid = uuid.UUID(initial_state["job_id"])
 
-    async with async_session_factory() as session:
-        await crud.create_job(
-            session,
-            job_id=job_uuid,
-            repo_url=initial_state["repo_full_name"] or initial_state["repo_local_path"],
-            issue_number=initial_state["issue_number"] or 0,
-            issue_title=initial_state["issue_title"],
-            issue_body=initial_state["issue_body"],
-            triggered_by=triggered_by,
-            max_iterations=initial_state["max_iterations"],
-        )
+    # Persistence is observability -- a database outage must not stop the
+    # agent from doing its actual job. Routing the CLIs through run_job
+    # otherwise made Postgres a hard dependency for runs that previously
+    # needed no database at all.
+    async def _create():
+        async with async_session_factory() as session:
+            await crud.create_job(
+                session,
+                job_id=job_uuid,
+                repo_url=initial_state["repo_full_name"] or initial_state["repo_local_path"],
+                issue_number=initial_state["issue_number"] or 0,
+                issue_title=initial_state["issue_title"],
+                issue_body=initial_state["issue_body"],
+                triggered_by=triggered_by,
+                max_iterations=initial_state["max_iterations"],
+            )
+
+    await _best_effort(_create, "could not create job row")
 
     start_job_budget(initial_state["job_id"], settings.job_cost_budget_usd)
     graph = build_graph()
@@ -75,22 +94,26 @@ async def run_job(
         status = "failed"
 
     budget = get_job_budget()
-    async with async_session_factory() as session:
-        if budget is not None:
-            await crud.add_job_cost(
+
+    async def _persist():
+        async with async_session_factory() as session:
+            if budget is not None:
+                await crud.add_job_cost(
+                    session,
+                    job_uuid,
+                    tokens_input=budget.total_input_tokens,
+                    tokens_output=budget.total_output_tokens,
+                    cost_usd=budget.total_cost_usd,
+                )
+            await crud.update_job_status(
                 session,
                 job_uuid,
-                tokens_input=budget.total_input_tokens,
-                tokens_output=budget.total_output_tokens,
-                cost_usd=budget.total_cost_usd,
+                status=status,
+                pr_url=final_state.get("pr_url"),
+                iteration_count=final_state.get("iteration_count", 0),
+                work_branch=final_state.get("work_branch"),
             )
-        await crud.update_job_status(
-            session,
-            job_uuid,
-            status=status,
-            pr_url=final_state.get("pr_url"),
-            iteration_count=final_state.get("iteration_count", 0),
-            work_branch=final_state.get("work_branch"),
-        )
+
+    await _best_effort(_persist, "could not persist final job status")
 
     return final_state

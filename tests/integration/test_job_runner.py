@@ -101,3 +101,53 @@ async def test_run_job_persists_cost_from_usage_tracker(monkeypatch):
         assert db_job.total_cost_usd > 0
         assert db_job.total_tokens_input == 10_000
         assert db_job.total_tokens_output == 5_000
+
+
+async def test_run_job_populates_tasks_and_events(monkeypatch):
+    """The gap this closes: tasks and events were schema-only. A real run
+    through the instrumented graph must now leave an audit trail and give
+    the SSE feed something to stream."""
+    from sqlalchemy import select
+
+    from src.db.models import Event, Task
+    from src.graph.build_graph import _instrumented
+
+    job_id = str(uuid.uuid4())
+
+    class InstrumentedGraph:
+        """Two real nodes, wrapped exactly as build_graph wraps them."""
+
+        def invoke(self, state, config=None):
+            plan = _instrumented("planner", lambda s: {"status": "coding", "plan_steps": [1, 2]})
+            test = _instrumented(
+                "testing",
+                lambda s: {"status": "done", "test_result": {"passed": True, "failure_signature": None}},
+            )
+            state = {**state, **plan(state)}
+            return {**state, **test(state)}
+
+    monkeypatch.setattr(job_runner, "build_graph", lambda: InstrumentedGraph())
+
+    await job_runner.run_job(_initial_state(job_id), timeout_s=30)
+
+    async with async_session_factory() as session:
+        tasks = (
+            (await session.execute(select(Task).where(Task.job_id == uuid.UUID(job_id))))
+            .scalars().all()
+        )
+        events = (
+            (await session.execute(select(Event).where(Event.job_id == uuid.UUID(job_id))))
+            .scalars().all()
+        )
+
+    assert {t.node_name for t in tasks} == {"planner", "testing"}
+    assert all(t.status == "succeeded" for t in tasks)
+    assert all(t.completed_at is not None and t.duration_ms is not None for t in tasks)
+
+    by_node = {t.node_name: t for t in tasks}
+    assert by_node["planner"].output_summary["plan_step_count"] == 2
+    assert by_node["testing"].output_summary["test_passed"] is True
+
+    kinds = {e.event_type for e in events}
+    assert "node_started" in kinds and "node_completed" in kinds
+    assert len(events) == 4  # started + completed for each of the two nodes
