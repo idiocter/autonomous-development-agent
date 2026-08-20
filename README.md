@@ -33,6 +33,19 @@ You need three things:
 A GitHub token is optional — you only need it if you want the agent to work on real GitHub
 issues rather than folders on your computer.
 
+## Quick version
+
+If you have `make`, these are all you need:
+
+```bash
+make install      # install packages
+make up           # start the database, build the test container
+make demo         # watch it fix a bug in the practice repo
+```
+
+Then `make` on its own lists every command. The longer form is below if you'd rather run the
+steps yourself.
+
 ## Setup — do this once
 
 **1. Install the Python packages**
@@ -76,9 +89,15 @@ Setup is done.
 Good for trying it out. Nothing is sent to GitHub.
 
 ```bash
+make demo
+```
+
+Or point it at any folder:
+
+```bash
 uv run python scripts/run_local_job.py \
-  --repo tests/fixtures/toy_repo \
-  --issue "Fix the off-by-one bug in calculate_total()"
+  --repo path/to/your/project \
+  --issue "Describe the bug here"
 ```
 
 You'll see the plan it made, whether the tests passed, the exact code change, and what it cost.
@@ -87,7 +106,7 @@ Your original folder is never touched — it works on a copy inside `workspaces/
 ### Fix a real GitHub issue and open a PR
 
 ```bash
-uv run python scripts/run_github_job.py --repo idiocter/agent-sandbox --issue 4
+make fix REPO=idiocter/agent-sandbox ISSUE=4
 ```
 
 Replace the repo with your own and `4` with your issue number.
@@ -96,7 +115,7 @@ Replace the repo with your own and `4` with your issue number.
 ### Start the web server
 
 ```bash
-uv run uvicorn src.api.main:app --reload
+make serve
 ```
 
 Then open these in your browser:
@@ -149,7 +168,7 @@ A typical run costs well under one cent.
 ## Running the tests
 
 ```bash
-uv run pytest
+make test
 ```
 
 Needs the database running and the test container built.
