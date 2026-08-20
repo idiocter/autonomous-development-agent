@@ -1,130 +1,162 @@
 # Autonomous Software Development Agent
 
-> **Branch note:** this `openai` branch runs on the OpenAI API (GPT models).
-> The `main` branch is the Anthropic/Claude version. Only the LLM layer differs.
+An AI agent that fixes bugs in your code by itself and opens a pull request for you to review.
 
-An AI agent that resolves GitHub issues end to end: it reads the issue, understands the
-codebase, plans a fix, writes the code, runs the tests in an isolated sandbox, debugs
-failures, and opens a pull request.
+You give it a GitHub issue. It reads your codebase, works out a fix, writes the code, runs
+your tests, debugs if they fail, and opens a PR. If it can't solve the problem, it stops and
+asks a human instead of trying forever.
 
-## What it does
+## What it does, step by step
 
-You point it at a GitHub issue. It then:
+1. **Downloads your repo** and reads through the codebase
+2. **Finds the relevant code** so it changes real functions instead of guessing
+3. **Makes a plan** — which files to change and how
+4. **Writes the code**
+5. **Runs your tests** inside a sealed Docker container (no internet, limited memory and CPU)
+6. **Fixes and retries** if tests fail, reading the error to work out what went wrong
+7. **Opens a pull request** on its own branch — it never merges anything itself
+8. **Gives up and tags a human** if it can't get the tests passing
 
-1. **Clones the repo** and indexes the codebase into a vector database
-2. **Retrieves the relevant code** so it edits real functions rather than guessing at them
-3. **Plans** the fix — which files to touch and what to change
-4. **Writes** the code
-5. **Runs the tests** inside a locked-down Docker container — no network, capped memory and CPU
-6. **Debugs and retries** if tests fail, reading the traceback to form a root-cause hypothesis
-7. **Commits, pushes, and opens a PR** on a dedicated branch — it never auto-merges
-8. **Escalates to a human** if it can't get tests passing, instead of looping forever
+It will not edit your tests to make them pass. It stops if it spends too much money or takes
+too long. And it ignores any instructions hidden inside issue text by other people.
 
-It will not edit your tests to make them pass, it stops if it exceeds a cost or time
-budget, and it ignores instructions embedded in issue text by third parties.
+## Before you start
 
-## Features
+You need three things:
 
-- **Full issue-to-PR loop** — Planner, Coding, Testing, and Debugging agents built on LangGraph
-- **Isolated test execution** — code runs in a resource-limited, network-disabled Docker sandbox
-- **Codebase-grounded** — retrieval-augmented generation (RAG) over the target repo so changes are based on real existing code, not guesses
-- **Real GitHub integration** — branch/commit/push, idempotent PR creation, and a webhook server that triggers on a labeled issue
-- **Loop-safety guards** — iteration cap, repeated-failure detection, cost budget, and wall-clock timeout, so a stuck run escalates to a human instead of looping forever
-- **Won't touch your tests** — the agents are instructed never to edit test files, and any test change that slips through is flagged in the PR body for review
-- **Cost visibility** — every run prints a per-model token and cost breakdown
-- **Job persistence** — plans, diffs, test results, and cost are recorded in Postgres
+| | Why |
+|---|---|
+| **Docker Desktop** — open and running | tests run inside a container; the database runs in one too |
+| **uv** | installs Python packages (`curl -LsSf https://astral.sh/uv/install.sh \| sh`) |
+| **An OpenAI API key** | the AI that does the thinking |
 
-## Tech stack
+A GitHub token is optional — you only need it if you want the agent to work on real GitHub
+issues rather than folders on your computer.
 
-Python, LangGraph, FastAPI, OpenAI API, Docker, PostgreSQL + pgvector, SQLAlchemy/Alembic, PyGithub.
+## Setup — do this once
 
-## Setup
-
-Requires Docker Desktop running.
+**1. Install the Python packages**
 
 ```bash
 uv sync --extra dev --extra github --extra db --extra sandbox --extra rag --extra api
+```
+
+**2. Add your keys**
+
+```bash
 cp .env.example .env
-# add OPENAI_API_KEY; GITHUB_TOKEN too if you want GitHub-backed runs
+```
 
-docker-compose up -d postgres          # host port 5433
+Open `.env` and fill in:
+
+```
+OPENAI_API_KEY=sk-proj-...      # required
+GITHUB_TOKEN=github_pat_...       # only needed for GitHub issues
+```
+
+**3. Start the database**
+
+```bash
+docker-compose up -d postgres
 uv run alembic upgrade head
+```
 
+**4. Build the test container**
+
+```bash
 docker build -f docker/Dockerfile.sandbox -t autonomous-dev-agent-sandbox:latest docker/
 ```
 
-## Usage
+Setup is done.
 
-### Fix a bug in a local repo
+## How to run it
 
-No GitHub required. Prints the plan, per-attempt test results, the resulting diff, and a
-token/cost table.
+### Fix a bug in a folder on your computer
+
+Good for trying it out. Nothing is sent to GitHub.
 
 ```bash
 uv run python scripts/run_local_job.py \
-  --repo path/to/repo \
-  --issue "Description of the bug or feature"
+  --repo tests/fixtures/toy_repo \
+  --issue "Fix the off-by-one bug in calculate_total()"
 ```
 
-Optional: `--max-iterations N` to override the debug-loop cap for a single run.
+You'll see the plan it made, whether the tests passed, the exact code change, and what it cost.
+Your original folder is never touched — it works on a copy inside `workspaces/`.
 
-### Resolve a real GitHub issue and open a PR
-
-Needs `GITHUB_TOKEN`. Clones the repo, works on a dedicated `agent/issue-N-<jobid>` branch,
-and opens a PR — it never pushes to your default branch and never auto-merges.
+### Fix a real GitHub issue and open a PR
 
 ```bash
-uv run python scripts/run_github_job.py --repo owner/repo --issue 42
+uv run python scripts/run_github_job.py --repo idiocter/agent-sandbox --issue 4
 ```
 
-Point this at a repo you control until you trust it.
+Replace the repo with your own and `4` with your issue number.
+**Use a test repo until you trust it.**
 
-### Run the webhook server
+### Start the web server
 
 ```bash
 uv run uvicorn src.api.main:app --reload
 ```
 
-| Endpoint | Purpose |
+Then open these in your browser:
+
+| Address | What you get |
 |---|---|
-| `POST /webhooks/github` | HMAC-verified issue events; fires when an issue gets the `agent:work-on-it` label |
-| `GET /jobs` | list recent jobs |
-| `GET /jobs/{id}` | one job's status, PR URL, and cost |
-| `GET /jobs/{id}/events` | live progress stream (SSE) |
-| `GET /health` | liveness |
+| http://localhost:8000/docs | clickable list of everything the server can do |
+| http://localhost:8000/jobs | every job it has run |
+| http://localhost:8000/health | check the server is alive |
 
-For local development, relay real GitHub deliveries with ngrok or smee.io pointed at
-`localhost:8000/webhooks/github`, and set `GITHUB_WEBHOOK_SECRET` to match.
+There is no home page — `http://localhost:8000/` shows "404 Not Found". That's normal.
 
-### Index a repo into the vector store
+## Common problems
 
-Normally automatic, but useful to pre-warm or inspect:
+**`404 Not Found` when running on a GitHub issue**
+You used `owner/repo` literally. Put in your real username and repo name, like
+`idiocter/agent-sandbox`.
 
-```bash
-uv run python scripts/index_repo.py --repo path/to/repo --repo-url owner/repo
-```
+**`404 Not Found` at http://localhost:8000/**
+Normal — there's no home page. Use `/docs` instead.
 
-## Configuration
+**`Connect call failed ... 5433`**
+The database isn't running. Start it with `docker-compose up -d postgres`.
+The agent still works without it — just with weaker code search and no saved history.
 
-All via `.env` — no code changes needed.
+**`Cannot connect to the Docker daemon`**
+Docker Desktop isn't open. Start it and wait for the whale icon to settle.
 
-| Variable | Default | Effect |
+**The agent opened a PR but didn't comment on the issue**
+Your GitHub token is missing the **Issues → Read and write** permission. PRs still work, but
+the agent can't comment or tag issues when it needs human help.
+
+**An error about `anthropic` or `openai` not being installed**
+You switched git branches. Re-run the `uv sync` command from setup — the two branches use
+different AI providers.
+
+## Settings you can change
+
+All in `.env`. No code changes needed.
+
+| Setting | Default | What it does |
 |---|---|---|
-| `PLANNER_MODEL` / `CODER_MODEL` / `TESTING_MODEL` / `DEBUGGER_MODEL` | `gpt-4o` / `gpt-4o-mini` | per-agent model choice |
-| `MAX_ITERATIONS` | `6` | max debug→code→test cycles before escalating |
-| `JOB_COST_BUDGET_USD` | `2.00` | hard spend cap; breaching it aborts and escalates |
-| `JOB_TIMEOUT_SECONDS` | `2700` | wall-clock kill switch |
-| `SANDBOX_TIMEOUT_SECONDS` | `300` | per-command timeout inside the sandbox |
+| `MAX_ITERATIONS` | `6` | how many times it retries a fix before giving up |
+| `JOB_COST_BUDGET_USD` | `2.00` | stops the job if it spends more than this |
+| `JOB_TIMEOUT_SECONDS` | `2700` | stops the job after 45 minutes |
+| `PLANNER_MODEL` etc. | `gpt-4o` / `gpt-4o-mini` | which AI model each part uses |
 
-Required GitHub token permissions: **Contents** (read/write), **Pull requests** (read/write),
-**Issues** (read/write). Issues write is what lets the agent comment a PR link back and apply
-the `agent:needs-human` label when it escalates — without it, escalation silently no-ops.
+A typical run costs well under one cent.
 
-## Tests
+## Running the tests
 
 ```bash
 uv run pytest
 ```
 
-Needs the Postgres container running and the sandbox image built for the full suite;
-Docker-dependent tests skip gracefully if Docker isn't available.
+Needs the database running and the test container built.
+
+## Two versions
+
+- **`openai`** (this branch) — uses GPT (OpenAI)
+- **`main`** — the same agent, using Claude instead
+
+Only the AI layer differs. Switch with `git checkout main`, then re-run `uv sync`.
