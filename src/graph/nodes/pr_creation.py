@@ -58,6 +58,7 @@ def pr_node(state: AgentState) -> dict:
             files_changed=files_changed,
             test_command=test_result["command"] if test_result else "",
             test_passed=test_result["passed"] if test_result else False,
+            injection_findings=state.get("injection_findings"),
         ),
         head=work_branch,
         base=state["base_branch"],

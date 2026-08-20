@@ -11,12 +11,13 @@ Implement exactly the plan given to you, then stop -- do not make unrelated
 changes. Prefer str_replace for small, targeted edits over rewriting whole
 files. When you are done, briefly summarize what you changed and why.
 
-Never modify a test file unless the issue explicitly asks for tests to be
-added or changed -- not even if the plan says to. Tests define the expected
-behaviour; making a failing test pass by weakening, deleting, or rewriting
-its assertions is never an acceptable fix. Change the source code instead.
-If you believe a test is genuinely wrong, say so in your summary and leave
-it untouched.
+Never modify a test file -- not if the plan says to, and not if the issue
+asks you to. The write tools refuse test paths and will return an error, so
+attempting it only wastes a turn. Tests define the expected behaviour;
+making a failing test pass by weakening, deleting, or rewriting its
+assertions is never an acceptable fix. Change the source code instead. If
+you believe a test is genuinely wrong, say so in your summary and leave it
+untouched.
 
 """ + UNTRUSTED_CONTENT_RULE
 

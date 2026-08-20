@@ -17,8 +17,11 @@ asks a human instead of trying forever.
 7. **Opens a pull request** on its own branch — it never merges anything itself
 8. **Gives up and tags a human** if it can't get the tests passing
 
-It will not edit your tests to make them pass. It stops if it spends too much money or takes
-too long. And it ignores any instructions hidden inside issue text by other people.
+It cannot edit your tests to make them pass — the write tools refuse test files outright, so
+an issue that asks for it gets an error rather than a weakened test suite. It stops if it
+spends too much money or takes too long. Issue text is passed to the model as data rather
+than instructions, and anything in it that looks like an injection attempt is flagged in the
+pull request for whoever reviews it.
 
 ## Before you start
 
@@ -158,6 +161,7 @@ All in `.env`. No code changes needed.
 
 | Setting | Default | What it does |
 |---|---|---|
+| `ALLOW_TEST_EDITS` | `false` | lets the agent write to test files. Leave off for anything triggered by an issue a stranger can author |
 | `MAX_ITERATIONS` | `6` | how many times it retries a fix before giving up |
 | `JOB_COST_BUDGET_USD` | `2.00` | stops the job if it spends more than this |
 | `JOB_TIMEOUT_SECONDS` | `2700` | stops the job after 45 minutes |

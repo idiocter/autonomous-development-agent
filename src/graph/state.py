@@ -56,6 +56,10 @@ class AgentState(TypedDict):
     # Planner output
     plan_steps: list[PlanStep]
     relevant_context: list[RetrievedChunk]
+    # Injection heuristics that fired on untrusted input, keyed by source
+    # ("issue", "repo_context"). Carried through the graph so the PR body can
+    # warn the human reviewing the diff, not just the run log.
+    injection_findings: dict[str, list[str]]
 
     # Coding output
     file_diffs: list[FileDiff]

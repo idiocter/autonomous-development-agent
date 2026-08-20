@@ -7,9 +7,9 @@ what get_auth_provider() returns.
 """
 
 from dataclasses import dataclass
-from pathlib import PurePosixPath
 
 import git
+import structlog
 from github import Github
 from github.GithubException import GithubException
 from github.Issue import Issue
@@ -17,7 +17,10 @@ from github.PullRequest import PullRequest
 from github.Repository import Repository
 
 from src.github_integration.auth import get_auth_provider
-from src.security.prompt_guard import redact_secrets
+from src.security.prompt_guard import injection_warning_block, redact_secrets
+from src.tools.filesystem_tools import is_test_path
+
+logger = structlog.get_logger(__name__)
 
 BOT_NAME = "autonomous-dev-agent[bot]"
 BOT_EMAIL = "autonomous-dev-agent-bot@users.noreply.github.com"
@@ -75,15 +78,60 @@ _ARTIFACT_PATHSPECS = [
     ":(glob)**/node_modules/**",
 ]
 
+# Secret-shaped files must never reach a commit. filesystem_tools already
+# refuses to *read* these, but `git add -A` is a second door onto the same
+# risk and it doesn't go through those tools at all: a repo's own test run can
+# create a .env in the workspace (this project's test suite does exactly that),
+# and the agent pushes to a branch on a repo that is often public. Unstaging is
+# the safe failure mode -- the file stays in the working tree, it just never
+# leaves the machine.
+#
+# .env.example and friends are deliberately excluded from the sweep: they are
+# meant to be committed, contain no live values, and are commonly edited.
+_SECRET_PATHSPECS = [
+    ":(glob)**/.env",
+    ":(glob)**/.env.*",
+    ":(glob)**/id_rsa*",
+    ":(glob)**/id_ed25519*",
+    ":(glob)**/.npmrc",
+    ":(glob)**/.pypirc",
+    ":(glob)**/.netrc",
+    ":(glob)**/*.pem",
+    ":(glob)**/*.key",
+    ":(glob)**/*.p12",
+    ":(glob)**/*.pfx",
+    ":(glob)**/*.keystore",
+    ":(glob)**/*.jks",
+    ":(glob)**/credentials.json",
+    ":(glob)**/service_account.json",
+    ":(glob)**/secrets.yaml",
+    ":(glob)**/secrets.yml",
+    ":(glob,exclude)**/.env.example",
+    ":(glob,exclude)**/.env.sample",
+    ":(glob,exclude)**/.env.template",
+]
+
 
 def commit_all(repo: git.Repo, message: str) -> bool:
     """Returns False if there was nothing to commit (working tree clean)."""
     repo.git.add(A=True)
 
-    # Drop artifacts back out of the index. `git reset -- <pathspec>` is a
-    # no-op when nothing matches, so this is safe on a clean tree.
+    # A staged secret is worth knowing about even though it's about to be
+    # dropped -- it means something in the run created one.
     try:
-        repo.git.reset("--", *_ARTIFACT_PATHSPECS)
+        staged_secrets = repo.git.diff("--cached", "--name-only", "--", *_SECRET_PATHSPECS)
+        if staged_secrets.strip():
+            logger.warning(
+                "refusing to commit secret-shaped files staged by git add -A",
+                paths=staged_secrets.split("\n"),
+            )
+    except git.GitCommandError:
+        pass
+
+    # Drop artifacts and secrets back out of the index. `git reset -- <pathspec>`
+    # is a no-op when nothing matches, so this is safe on a clean tree.
+    try:
+        repo.git.reset("--", *_ARTIFACT_PATHSPECS, *_SECRET_PATHSPECS)
     except git.GitCommandError:
         # Never let artifact cleanup abort an otherwise valid commit.
         pass
@@ -142,17 +190,13 @@ def add_label(repo: Repository, issue_number: int, label: str) -> None:
 
 
 def is_test_file(path: str) -> bool:
-    """Heuristic used to flag test edits for human review. Deliberately
-    broad -- a false positive costs a reviewer one glance, a false negative
-    lets a weakened assertion through unnoticed.
+    """Flags test edits for human review.
+
+    Same definition the filesystem tools use to *refuse* the write, imported
+    rather than restated: if the two ever disagreed, the gap between them is
+    exactly the set of files that get edited without anyone being told.
     """
-    name = PurePosixPath(path).name.lower()
-    parts = {p.lower() for p in PurePosixPath(path).parts}
-    return (
-        name.startswith("test_")
-        or name.endswith(("_test.py", "_test.go", ".test.js", ".test.ts", ".spec.js", ".spec.ts"))
-        or bool({"tests", "test", "__tests__", "spec"} & parts)
-    )
+    return is_test_path(path)
 
 
 def build_pr_body(
@@ -162,6 +206,7 @@ def build_pr_body(
     files_changed: list[str],
     test_command: str,
     test_passed: bool,
+    injection_findings: dict[str, list[str]] | None = None,
 ) -> str:
     files_list = "\n".join(f"- `{f}`" for f in files_changed) or "(no files listed)"
     status = "✅ passing" if test_passed else "⚠️ not verified"
@@ -182,6 +227,11 @@ def build_pr_body(
             + "\n".join(f"> {line}" for line in listed.splitlines())
             + "\n"
         )
+
+    # Injection attempts in the issue text are detected during planning; the
+    # reviewer of *this* PR is the person who needs to know about them, so the
+    # finding travels here rather than stopping at the log line.
+    warning += injection_warning_block(injection_findings or {})
 
     return (
         f"Resolves #{issue_number}.\n\n"
