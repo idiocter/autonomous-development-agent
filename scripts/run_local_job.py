@@ -73,6 +73,7 @@ def main() -> None:
         "work_branch": None,
         "plan_steps": [],
         "relevant_context": [],
+        "injection_findings": {},
         "file_diffs": [],
         "commit_message": None,
         "test_command": "",

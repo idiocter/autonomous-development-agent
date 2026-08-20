@@ -187,3 +187,82 @@ def test_commit_all_returns_false_when_only_artifacts_changed(local_repo, tmp_pa
     (cache / "mod.cpython-312.pyc").write_bytes(b"\x00\x01")
 
     assert commit_all(local_repo, "should not commit") is False
+
+
+# `git add -A` doesn't go through filesystem_tools, so the read denylist gives
+# no protection here. A repo's own test run creating a .env in the workspace is
+# enough to push a live secret to a branch on a public repo.
+@pytest.mark.parametrize(
+    "secret_path",
+    [
+        ".env",
+        ".env.local",
+        "config/.env.production",
+        "id_rsa",
+        "certs/server.pem",
+        "private.key",
+        "credentials.json",
+        "deploy/service_account.json",
+        "secrets.yaml",
+    ],
+)
+def test_commit_all_never_commits_secret_files(local_repo, tmp_path, secret_path):
+    (tmp_path / "real_change.py").write_text("x = 1\n")
+    target = tmp_path / secret_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("OPENAI_API_KEY=sk-proj-not-a-real-key-but-shaped-like-one\n")
+
+    assert commit_all(local_repo, "feat: real change") is True
+
+    committed = local_repo.git.show("--name-only", "--pretty=format:", "HEAD").split()
+    assert "real_change.py" in committed
+    assert secret_path not in committed
+    # The file must survive on disk -- this is an unstage, not a delete.
+    assert target.exists()
+
+
+def test_commit_all_returns_false_when_only_a_secret_changed(local_repo, tmp_path):
+    (tmp_path / ".env").write_text("OPENAI_API_KEY=sk-proj-nope\n")
+
+    assert commit_all(local_repo, "should not commit") is False
+
+
+def test_commit_all_still_commits_env_example(local_repo, tmp_path):
+    """.env.example carries no live values and is meant to be tracked."""
+    (tmp_path / ".env.example").write_text("OPENAI_API_KEY=\n")
+
+    assert commit_all(local_repo, "docs: add env example") is True
+    committed = local_repo.git.show("--name-only", "--pretty=format:", "HEAD").split()
+    assert ".env.example" in committed
+
+
+def test_pr_body_warns_about_prompt_injection_findings():
+    body = build_pr_body(
+        issue_number=6,
+        plan_summary="- [edit] inventory.py: round to 2dp",
+        files_changed=["inventory.py"],
+        test_command="pytest -q",
+        test_passed=True,
+        injection_findings={
+            "issue": ["override_instructions", "credential_exfiltration"],
+            "repo_context": [],
+        },
+    )
+
+    assert "CAUTION" in body
+    assert "prompt-injection" in body.lower()
+    assert "override_instructions" in body
+    assert "credential_exfiltration" in body
+
+
+def test_pr_body_has_no_injection_warning_when_nothing_matched():
+    body = build_pr_body(
+        issue_number=6,
+        plan_summary="- [edit] inventory.py: round to 2dp",
+        files_changed=["inventory.py"],
+        test_command="pytest -q",
+        test_passed=True,
+        injection_findings={"issue": [], "repo_context": []},
+    )
+
+    assert "CAUTION" not in body
