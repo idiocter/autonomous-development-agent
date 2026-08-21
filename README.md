@@ -180,6 +180,7 @@ Needs the database running and the test container built.
 ## Two versions
 
 - **`openai`** (this branch) — uses GPT (OpenAI)
-- **`main`** — the same agent, using Claude instead
+- **`anthropic`** — the same agent, using Claude instead
 
-Only the AI layer differs. Switch with `git checkout main`, then re-run `uv sync`.
+Only the AI layer differs. Switch with `git checkout anthropic`, then re-run
+`uv sync`. The `main` branch holds no code — just an index pointing at these two.
