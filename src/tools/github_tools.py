@@ -6,6 +6,7 @@ host's git remotes -- only this module holds the token, scoped to exactly
 what get_auth_provider() returns.
 """
 
+import textwrap
 from dataclasses import dataclass
 
 import git
@@ -197,6 +198,48 @@ def is_test_file(path: str) -> bool:
     exactly the set of files that get edited without anyone being told.
     """
     return is_test_path(path)
+
+
+_SUBJECT_LIMIT = 72
+
+
+def build_commit_message(
+    *,
+    issue_number: int | None,
+    issue_title: str,
+    summary: str | None,
+) -> str:
+    """Format the coding agent's prose into an actual commit message.
+
+    The coder returns a paragraph -- "I fixed the apply_discount function in
+    inventory.py to subtract a percentage of the price rather than a flat
+    amount, by changing the return statement to..." -- and that string used to
+    be handed to `git commit` whole. The result was 300-character subject lines
+    in the target repo, which is what `git log --oneline`, the PR's commit list
+    and every blame view show. The prose is worth keeping; it belongs in the
+    body, under a subject someone can scan.
+
+    Redacted like any other outbound text: this lands in a repo that is often
+    public, and the summary is model output that could quote a secret it read.
+    Redaction runs *before* wrapping, not after -- textwrap will happily split
+    a 51-character API key across two lines, and a key with a newline in the
+    middle of it matches none of the patterns while remaining perfectly
+    readable to anyone looking at the commit.
+    """
+    title = " ".join(redact_secrets(issue_title or "").split())
+    if issue_number is not None:
+        subject = f"Fix #{issue_number}: {title}" if title else f"Fix issue #{issue_number}"
+    else:
+        subject = title or "Apply automated fix"
+
+    if len(subject) > _SUBJECT_LIMIT:
+        subject = subject[: _SUBJECT_LIMIT - 3].rstrip() + "..."
+
+    body_source = " ".join(redact_secrets(summary or "").split())
+    if not body_source:
+        return subject
+
+    return f"{subject}\n\n{textwrap.fill(body_source, width=_SUBJECT_LIMIT)}"
 
 
 def build_pr_body(

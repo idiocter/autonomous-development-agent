@@ -12,6 +12,7 @@ import pytest
 from src.tools.github_tools import (
     BOT_EMAIL,
     BOT_NAME,
+    build_commit_message,
     build_escalation_comment,
     build_pr_body,
     commit_all,
@@ -266,3 +267,61 @@ def test_pr_body_has_no_injection_warning_when_nothing_matched():
     )
 
     assert "CAUTION" not in body
+
+
+# The coder returns prose. `git commit` needs a subject line. The gap between
+# those two facts produced 300-character subjects in the sandbox repo, visible
+# in every `git log --oneline` and PR commit list.
+def test_commit_message_puts_prose_in_the_body_not_the_subject():
+    summary = (
+        "I fixed the apply_discount function in inventory.py to subtract a percentage "
+        "of the price rather than a flat amount, by changing the return statement to: "
+        "price * (1 - percent / 100). This matches the function's docstring and expected "
+        "behavior tested by the existing test cases."
+    )
+    msg = build_commit_message(
+        issue_number=6, issue_title="Round discount results to 2dp", summary=summary
+    )
+    subject, blank, body = msg.split("\n", 2)
+
+    assert subject == "Fix #6: Round discount results to 2dp"
+    assert blank == ""
+    assert "apply_discount" in body
+    assert all(len(line) <= 72 for line in msg.split("\n"))
+
+
+def test_commit_message_truncates_an_overlong_subject():
+    msg = build_commit_message(
+        issue_number=12, issue_title="x" * 200, summary="did the thing"
+    )
+    subject = msg.split("\n", 1)[0]
+
+    assert len(subject) <= 72
+    assert subject.endswith("...")
+
+
+def test_commit_message_without_a_summary_is_just_the_subject():
+    msg = build_commit_message(issue_number=4, issue_title="Handle negative prices", summary=None)
+    assert msg == "Fix #4: Handle negative prices"
+
+
+def test_commit_message_for_a_local_run_has_no_issue_reference():
+    msg = build_commit_message(issue_number=None, issue_title="Fix off-by-one", summary="done")
+    assert msg.split("\n", 1)[0] == "Fix off-by-one"
+
+
+def test_commit_message_redacts_secrets_quoted_by_the_coder():
+    msg = build_commit_message(
+        issue_number=6,
+        issue_title="Round to 2dp",
+        summary="I read the config, which contained sk-proj-" + "A" * 40,
+    )
+    assert "sk-proj-" + "A" * 40 not in msg
+    assert "[REDACTED]" in msg
+
+
+def test_commit_message_collapses_newlines_in_the_issue_title():
+    msg = build_commit_message(
+        issue_number=6, issue_title="Round\n\ndiscount results", summary="done"
+    )
+    assert msg.split("\n", 1)[0] == "Fix #6: Round discount results"
