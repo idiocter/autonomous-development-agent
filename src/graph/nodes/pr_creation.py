@@ -9,6 +9,7 @@ import structlog
 from src.github_integration.auth import get_auth_provider
 from src.graph.state import AgentState
 from src.tools.github_tools import (
+    build_commit_message,
     build_pr_body,
     comment_on_issue,
     commit_all,
@@ -30,7 +31,14 @@ def pr_node(state: AgentState) -> dict:
     local_repo = git.Repo(state["repo_local_path"])
 
     work_branch = state["work_branch"] or f"agent/issue-{state['issue_number']}-{state['job_id'][:8]}"
-    had_changes = commit_all(local_repo, state["commit_message"] or f"Fix issue #{state['issue_number']}")
+    had_changes = commit_all(
+        local_repo,
+        build_commit_message(
+            issue_number=state["issue_number"],
+            issue_title=state["issue_title"],
+            summary=state["commit_message"],
+        ),
+    )
 
     if not had_changes:
         return {
