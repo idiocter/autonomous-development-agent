@@ -20,12 +20,40 @@ branch has its own README with setup instructions.
 
 ## How it works
 
-A LangGraph state machine with six nodes:
+A LangGraph state machine with six nodes. The only edge that loops is
+`debugging → coding`, and it is bounded by `MAX_ITERATIONS`:
 
-```
-planner → coding → testing ─┬─ pass ──→ pr_creation → END
-                            ├─ retry ─→ debugging → coding  (loop)
-                            └─ give_up → human_escalation → END
+```mermaid
+flowchart TD
+    issue(["GitHub issue"]) --> planner
+
+    planner["<b>planner</b><br/>retrieve relevant code, plan the change"]
+    coding["<b>coding</b><br/>write it"]
+    testing["<b>testing</b><br/>run the suite in a sandboxed container"]
+    debugging["<b>debugging</b><br/>read the failure, work out why"]
+    pr["<b>pr_creation</b><br/>branch, commit, open PR"]
+    escalation["<b>human_escalation</b><br/>comment on the issue, tag a human"]
+
+    planner --> coding --> testing --> gate{"tests pass?"}
+
+    gate -->|pass| pr
+    gate -->|"fail, retries left"| debugging
+    gate -->|"out of retries"| escalation
+
+    debugging -->|retry| coding
+
+    pr --> review(["Human reviews the PR<br/>the agent never merges"])
+    escalation --> human(["Human picks it up"])
+
+    classDef node fill:#eef2ff,stroke:#4f46e5,stroke-width:1px,color:#111
+    classDef good fill:#dcfce7,stroke:#16a34a,stroke-width:1px,color:#111
+    classDef warn fill:#fef3c7,stroke:#d97706,stroke-width:1px,color:#111
+    classDef edge fill:#f1f5f9,stroke:#64748b,stroke-width:1px,color:#111
+
+    class planner,coding,testing,debugging node
+    class pr,review good
+    class escalation,human warn
+    class issue,gate edge
 ```
 
 1. **Retrieves** the relevant code, so it changes real functions instead of guessing
