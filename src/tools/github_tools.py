@@ -168,11 +168,24 @@ def create_pr(
     body: str,
     head: str,
     base: str,
+    draft: bool = False,
 ) -> PullRequest:
+    """Opens a PR, or returns the open one already on this branch.
+
+    `draft=True` is used by the escalation path to hand over partial work: a
+    draft says "not ready to merge", which is exactly true of a run that gave
+    up, and branch protection generally refuses to merge one.
+
+    Note the existing-PR branch returns it *unchanged* -- title and body are
+    not refreshed. Branch names carry the job id so collisions are rare, and
+    the escalation path posts a fresh issue comment as its source of truth.
+    """
     existing = find_existing_pr(repo, head)
     if existing is not None:
         return existing
-    return repo.create_pull(title=title, body=redact_secrets(body), head=head, base=base)
+    return repo.create_pull(
+        title=title, body=redact_secrets(body), head=head, base=base, draft=draft
+    )
 
 
 def comment_on_issue(repo: Repository, issue_number: int, body: str) -> None:
@@ -286,10 +299,189 @@ def build_pr_body(
     )
 
 
-def build_escalation_comment(*, debug_analysis: str | None, test_history_summary: str) -> str:
-    return (
-        "🤖 I attempted to resolve this issue but couldn't get tests passing within "
-        "the allotted attempts, so I'm stopping here for a human to take a look.\n\n"
-        f"### Attempts\n{test_history_summary}\n\n"
-        f"### Last debugging analysis\n{debug_analysis or '(none)'}\n"
+def diff_stat(repo: git.Repo, base_branch: str) -> str:
+    """`git diff --stat` against the base, or "" if git can't answer."""
+    try:
+        return repo.git.diff("--stat", f"{base_branch}...HEAD")
+    except git.GitCommandError:
+        return ""
+
+
+def changed_files(repo: git.Repo, base_branch: str) -> list[str]:
+    """Files actually changed, as opposed to the files the plan intended to
+    change. At give-up time those two often diverge, and the gap is itself
+    worth showing a human.
+    """
+    try:
+        out = repo.git.diff("--name-only", f"{base_branch}...HEAD")
+    except git.GitCommandError:
+        return []
+    return [line for line in out.splitlines() if line.strip()]
+
+
+def _fence(text: str, limit: int = 3000) -> str:
+    """Fence untrusted output so its own backticks can't break out of the block.
+
+    Test output is arbitrary text from someone else's suite -- it can contain
+    any number of consecutive backticks, so pick a fence longer than the
+    longest run in it.
+    """
+    text = text.strip()
+    if len(text) > limit:
+        text = text[-limit:]
+        text = "…(truncated)\n" + text[text.find("\n") + 1 :]
+    longest = 0
+    run = 0
+    for ch in text:
+        run = run + 1 if ch == "`" else 0
+        longest = max(longest, run)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}\n{text}\n{fence}"
+
+
+# What each guard means for the person picking the work up. The next-step line
+# matters more than the headline: "raise the budget" and "more attempts won't
+# help" are opposite advice, and reporting the wrong one wastes their time.
+_GIVE_UP_WORDING: dict[str, tuple[str, str]] = {
+    "over_budget": (
+        "I hit this job's cost budget.",
+        (
+            "Raise `JOB_COST_BUDGET_USD` and re-run to give it more room, or take "
+            "over from the branch below — it was still making progress when the "
+            "money ran out."
+        ),
+    ),
+    "repeating_failure": (
+        "The same test failure came back twice in a row, so I was going in circles.",
+        (
+            "More attempts won't help — it's stuck on one error and probably needs "
+            "a piece of context I don't have. Start from the diff and the last "
+            "failing output below."
+        ),
+    ),
+    "iteration_cap": (
+        "I used all my attempts.",
+        (
+            "Here's how far it got. If the failures were still changing between "
+            "attempts (see the table), raising `MAX_ITERATIONS` may be enough."
+        ),
+    ),
+}
+
+
+def build_escalation_comment(
+    *,
+    debug_analysis: str | None,
+    test_history_summary: str,
+    reason: str | None = None,
+    iteration_count: int = 0,
+    max_iterations: int = 0,
+    cost_spent_usd: float | None = None,
+    cost_budget_usd: float | None = None,
+    job_id: str = "",
+    plan_summary: str = "",
+    diff_stat_text: str = "",
+    files_changed: list[str] | None = None,
+    last_failure_output: str = "",
+    pr_url: str | None = None,
+    pr_number: int | None = None,
+    work_branch: str | None = None,
+    push_error: str | None = None,
+    had_changes: bool = True,
+    injection_findings: dict[str, list[str]] | None = None,
+) -> str:
+    """The handoff document, rendered for both the issue comment and the PR body.
+
+    Every argument past the first two has a default, so old call sites keep
+    working and the node can pass only what it managed to gather.
+
+    Sections are omitted entirely when their input is empty rather than
+    rendering "(none)" -- a document full of empty headings reads like a stub,
+    which is what made the original version feel like a shrug.
+
+    Deliberately not built on build_pr_body: that hardcodes "Resolves #N", and
+    on partial work that's dangerous -- merging it would close an issue nobody
+    fixed.
+    """
+    headline, next_step = _GIVE_UP_WORDING.get(
+        reason or "",
+        (
+            "I couldn't get the tests passing.",
+            "Start from the diff and the last failing output below.",
+        ),
     )
+    if reason == "iteration_cap" and max_iterations:
+        headline = f"I used all {max_iterations} of my attempts."
+    if reason == "over_budget" and cost_spent_usd is not None and cost_budget_usd:
+        headline = (
+            f"I hit this job's cost budget "
+            f"(${cost_spent_usd:.2f} of ${cost_budget_usd:.2f} spent)."
+        )
+
+    out = ["🤖 **I couldn't finish this one — here's everything I have.**", "", f"**{headline}**"]
+
+    if not had_changes:
+        out.append("I stopped before making any file changes, so there's no code to hand over.")
+    elif pr_url:
+        out.append("The work so far is pushed and open as a draft PR. It does **not** pass tests.")
+    elif push_error:
+        out.append(
+            f"The work is committed locally on branch `{work_branch}` in the job workspace, "
+            f"but I couldn't push it: `{push_error}`"
+        )
+    elif work_branch:
+        out.append(f"The work so far is pushed to branch `{work_branch}`. It does **not** pass tests.")
+
+    if pr_url:
+        label = f"#{pr_number} — draft" if pr_number else "draft PR"
+        out += ["", f"**→ [{label}]({pr_url})**" + (f" · branch `{work_branch}`" if work_branch else "")]
+
+    # Test-file edits and injection attempts matter more here than on a green
+    # PR: partial work under review is exactly where a weakened assertion or a
+    # successful injection would go unnoticed.
+    touched_tests = [f for f in (files_changed or []) if is_test_file(f)]
+    if touched_tests:
+        listed = "\n".join(f"> - `{f}`" for f in touched_tests)
+        out += [
+            "",
+            "> [!WARNING]",
+            "> **This changes test files.** The agent is instructed not to, so check these",
+            "> aren't just weakened assertions:",
+            listed,
+        ]
+    warning = injection_warning_block(injection_findings or {})
+    if warning:
+        out.append(warning)
+
+    out += ["", "### What to do next", next_step]
+
+    if plan_summary.strip():
+        out += ["", "### What I was trying to do", plan_summary.strip()]
+    if diff_stat_text.strip():
+        out += ["", "### What I actually changed", _fence(diff_stat_text)]
+    if test_history_summary.strip():
+        out += ["", "### What I tried, and what happened", test_history_summary.strip()]
+    if debug_analysis and debug_analysis.strip():
+        quoted = "\n".join(f"> {line}" for line in debug_analysis.strip().splitlines())
+        out += ["", "### My last read on it", quoted]
+    if last_failure_output.strip():
+        out += [
+            "",
+            "<details><summary>Last failing output</summary>",
+            "",
+            _fence(last_failure_output),
+            "",
+            "</details>",
+        ]
+
+    footer = []
+    if iteration_count and max_iterations:
+        footer.append(f"{iteration_count} of {max_iterations} attempts")
+    if cost_spent_usd is not None and cost_budget_usd:
+        footer.append(f"${cost_spent_usd:.2f} of ${cost_budget_usd:.2f} spent")
+    if job_id:
+        footer.append(f"job `{job_id[:8]}`")
+    if footer:
+        out += ["", f"<sub>{' · '.join(footer)}</sub>"]
+
+    return "\n".join(out) + "\n"
