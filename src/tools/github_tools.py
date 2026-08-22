@@ -49,9 +49,26 @@ def get_issue_context(repo: Repository, issue_number: int) -> IssueContext:
     return IssueContext(number=issue.number, title=issue.title, body=issue.body or "", comments=comments)
 
 
+def _authed_url(repo_full_name: str, token: str) -> str:
+    return f"https://x-access-token:{token}@github.com/{repo_full_name}.git"
+
+
+def _public_url(repo_full_name: str) -> str:
+    return f"https://github.com/{repo_full_name}.git"
+
+
 def clone_repo(repo_full_name: str, dest_path: str, token: str) -> git.Repo:
-    url = f"https://x-access-token:{token}@github.com/{repo_full_name}.git"
-    return git.Repo.clone_from(url, dest_path)
+    """Clone with credentials, then forget them.
+
+    `git clone https://<token>@host/...` records that URL as origin in
+    .git/config, so the token sits in plaintext in the workspace for as long as
+    the directory survives -- and workspaces are never cleaned up automatically.
+    Resetting origin to the public URL keeps the credential out of the job's
+    scratch directory; push_branch supplies it per-push instead.
+    """
+    repo = git.Repo.clone_from(_authed_url(repo_full_name, token), dest_path)
+    repo.remote("origin").set_url(_public_url(repo_full_name))
+    return repo
 
 
 def create_work_branch(repo: git.Repo, base_branch: str, work_branch: str) -> None:
@@ -147,10 +164,25 @@ def commit_all(repo: git.Repo, message: str) -> bool:
 
 
 def push_branch(repo: git.Repo, work_branch: str, token: str, repo_full_name: str) -> None:
-    url = f"https://x-access-token:{token}@github.com/{repo_full_name}.git"
-    remote = repo.remote("origin")
-    remote.set_url(url)
-    remote.push(refspec=f"{work_branch}:{work_branch}")
+    """Push using a one-shot authenticated URL, never a stored one.
+
+    Passing the URL as an argument keeps it out of .git/config entirely -- the
+    previous version called remote.set_url(), which wrote the token to disk
+    permanently.
+
+    Git echoes the command line back inside GitCommandError, so a failed push
+    would otherwise put the token in an exception that the escalation path
+    reports on a public issue. Redaction would catch it downstream, but the
+    error shouldn't carry the credential in the first place.
+    """
+    try:
+        repo.git.push(_authed_url(repo_full_name, token), f"{work_branch}:{work_branch}")
+    except git.GitCommandError as exc:
+        raise git.GitCommandError(
+            ["git", "push", _public_url(repo_full_name), work_branch],
+            exc.status,
+            redact_secrets(str(exc.stderr or "")),
+        ) from None
 
 
 def find_existing_pr(repo: Repository, work_branch: str) -> PullRequest | None:

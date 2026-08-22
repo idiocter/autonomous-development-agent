@@ -4,6 +4,7 @@ creation) are tested with mocked PyGithub objects since there's no live
 token in this environment yet; see plan.md's credential status.
 """
 
+import pathlib
 from unittest.mock import MagicMock
 
 import git
@@ -16,10 +17,12 @@ from src.tools.github_tools import (
     build_escalation_comment,
     build_pr_body,
     changed_files,
+    clone_repo,
     commit_all,
     create_pr,
     diff_stat,
     find_existing_pr,
+    push_branch,
 )
 
 
@@ -466,3 +469,72 @@ def test_handoff_footer_carries_attempts_cost_and_job_id():
 def test_diff_stat_and_changed_files_are_empty_on_git_error(local_repo):
     assert diff_stat(local_repo, "no-such-branch") == ""
     assert changed_files(local_repo, "no-such-branch") == []
+
+
+# --- the push token must never be written to disk ------------------------
+#
+# clone_repo used to leave https://x-access-token:<PAT>@github.com/... as
+# origin in .git/config, and push_branch called set_url with the same thing.
+# Workspaces are never cleaned up automatically, so the credential sat in the
+# scratch directory indefinitely -- 5 of 26 on the machine that found this.
+
+def test_clone_leaves_no_token_in_git_config(tmp_path, monkeypatch):
+    source = tmp_path / "origin"
+    source.mkdir()
+    src = git.Repo.init(source)
+    (source / "f.txt").write_text("x\n")
+    src.git.add(A=True)
+    with src.config_writer() as cfg:
+        cfg.set_value("user", "name", "t")
+        cfg.set_value("user", "email", "t@e.com")
+    src.index.commit("init")
+
+    # clone_from is handed the authenticated URL; point it at the local repo
+    # so the test needs no network, and assert on what lands in config.
+    captured = {}
+
+    real_clone = git.Repo.clone_from
+
+    def fake_clone(url, dest, **kw):
+        captured["url"] = url
+        return real_clone(str(source), dest, **kw)
+
+    monkeypatch.setattr(git.Repo, "clone_from", staticmethod(fake_clone))
+
+    dest = tmp_path / "work"
+    repo = clone_repo("owner/repo", str(dest), "ghp_liveTokenValue123456789")
+
+    assert "ghp_liveTokenValue123456789" in captured["url"], "clone still authenticates"
+    config = (dest / ".git" / "config").read_text()
+    assert "ghp_liveTokenValue123456789" not in config, "token must not persist on disk"
+    assert repo.remote("origin").url == "https://github.com/owner/repo.git"
+
+
+def test_push_does_not_write_the_token_to_config(local_repo):
+    """git.cmd.Git resolves subcommands via __getattr__, so stub the accessor."""
+    config_before = (pathlib.Path(local_repo.git_dir) / "config").read_text()
+    local_repo.git = MagicMock()
+
+    push_branch(local_repo, "agent/x", "ghp_anotherLiveToken98765", "owner/repo")
+
+    url = local_repo.git.push.call_args.args[0]
+    assert "ghp_anotherLiveToken98765" in url, "push still authenticates"
+    config_after = (pathlib.Path(local_repo.git_dir) / "config").read_text()
+    assert "ghp_anotherLiveToken98765" not in config_after
+    assert config_after == config_before, "push must not touch .git/config at all"
+
+
+def test_push_failure_does_not_leak_the_token(local_repo):
+    """git echoes the command line into GitCommandError, and the escalation
+    path reports push errors on a public issue."""
+    local_repo.git = MagicMock()
+    local_repo.git.push.side_effect = git.GitCommandError(
+        ["git", "push", "https://x-access-token:ghp_secretShouldNotAppear123@github.com/o/r.git"],
+        128,
+        b"fatal: Authentication failed",
+    )
+
+    with pytest.raises(git.GitCommandError) as caught:
+        push_branch(local_repo, "agent/x", "ghp_secretShouldNotAppear123", "owner/repo")
+
+    assert "ghp_secretShouldNotAppear123" not in str(caught.value)
