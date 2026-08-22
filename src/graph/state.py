@@ -43,7 +43,7 @@ JobStatus = Literal[
 # edge, so this exists purely so the escalation comment can tell the human
 # which one tripped -- "you ran out of money" and "it's stuck on one error"
 # call for completely different next steps.
-GiveUpReason = Literal["over_budget", "repeating_failure", "iteration_cap"]
+GiveUpReason = Literal["over_budget", "repeating_failure", "iteration_cap", "no_change"]
 
 
 class AgentState(TypedDict):

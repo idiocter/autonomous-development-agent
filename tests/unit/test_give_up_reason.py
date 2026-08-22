@@ -116,3 +116,100 @@ def test_passing_tests_route_pass_regardless_of_any_guard():
         test_history=_repeating(),
     )
     assert route_after_test(state) == "pass"
+
+
+# --- passing tests are not evidence the work got done --------------------
+#
+# Observed on the sandbox repo: an issue asked for behaviour that contradicted
+# an existing test. The agent deleted a blank line, the suite passed (it tests
+# the OLD behaviour, which was untouched), and the run opened a PR as a
+# success. A false green is worse than an honest give-up -- nobody re-reads a
+# passing PR.
+
+import subprocess
+
+import pytest as _pytest
+
+
+def _repo(tmp_path):
+    def run(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    run("init", "-q", "-b", "main")
+    run("config", "user.email", "t@e.com")
+    run("config", "user.name", "t")
+    (tmp_path / "app.py").write_text("def f():\n    return 1\n\n\ndef g():\n    return 2\n")
+    run("add", "-A")
+    run("commit", "-qm", "base")
+    return run
+
+
+def _passing_state(tmp_path, **overrides):
+    base = _state(
+        test_result=_result(passed=True),
+        repo_local_path=str(tmp_path),
+        base_branch="main",
+    )
+    base.update(overrides)
+    return base
+
+
+def test_whitespace_only_change_is_not_a_fix(tmp_path):
+    """The exact shape that shipped a no-op PR."""
+    _repo(tmp_path)
+    (tmp_path / "app.py").write_text("def f():\n    return 1\n\ndef g():\n    return 2\n")
+
+    state = _passing_state(tmp_path)
+    assert give_up_reason(state) == "no_change"
+    assert route_after_test(state) == "give_up"
+
+
+def test_untouched_tree_is_not_a_fix(tmp_path):
+    _repo(tmp_path)
+
+    assert give_up_reason(_passing_state(tmp_path)) == "no_change"
+
+
+def test_a_real_edit_still_ships(tmp_path):
+    _repo(tmp_path)
+    (tmp_path / "app.py").write_text("def f():\n    return 99\n\n\ndef g():\n    return 2\n")
+
+    state = _passing_state(tmp_path)
+    assert give_up_reason(state) is None
+    assert route_after_test(state) == "pass"
+
+
+def test_a_new_file_counts_as_a_real_change(tmp_path):
+    _repo(tmp_path)
+    (tmp_path / "helper.py").write_text("VALUE = 1\n")
+
+    assert give_up_reason(_passing_state(tmp_path)) is None
+
+
+def test_build_artifacts_alone_do_not_count(tmp_path):
+    """The sandbox drops __pycache__ into the tree on every run."""
+    _repo(tmp_path)
+    cache = tmp_path / "__pycache__"
+    cache.mkdir()
+    (cache / "app.cpython-312.pyc").write_bytes(b"\x00")
+
+    assert give_up_reason(_passing_state(tmp_path)) == "no_change"
+
+
+def test_an_unreadable_workspace_does_not_block_a_passing_run(tmp_path):
+    """Failing to inspect must never strand a legitimate run -- and local runs
+    have no git repo at all."""
+    state = _passing_state(tmp_path / "nonexistent")
+
+    assert give_up_reason(state) is None
+    assert route_after_test(state) == "pass"
+
+
+def test_failing_tests_are_unaffected_by_the_no_change_check(tmp_path):
+    """The check only applies when the suite is green; a failing run still
+    routes on the usual guards."""
+    _repo(tmp_path)
+    state = _state(repo_local_path=str(tmp_path), base_branch="main",
+                   iteration_count=6, max_iterations=6)
+
+    assert give_up_reason(state) == "iteration_cap"
