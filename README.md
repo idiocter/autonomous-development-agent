@@ -4,7 +4,9 @@ An AI agent that fixes bugs in your code by itself and opens a pull request for 
 
 You give it a GitHub issue. It reads your codebase, works out a fix, writes the code, runs
 your tests inside a sealed container, debugs if they fail, and opens a PR. It never merges
-anything itself, and if it can't solve the problem it stops and asks a human.
+anything itself. If it can't solve the problem it stops and hands off — pushing what
+it managed as a draft PR, so a human inherits real code and a written account of what
+was tried rather than just an apology.
 
 **This branch holds no code.** The agent exists as two implementations that differ only in
 which model does the thinking:
@@ -28,8 +30,8 @@ plans the fix; coding writes it; testing runs the suite in a network-isolated
 Docker container. If tests pass, pr_creation opens a pull request for a human to
 review and merge. If they fail, debugging analyses the output and hands back to
 coding to retry. When the agent runs out of retries, budget, or time, it
-escalates: human_escalation comments on the issue and tags a
-person.](docs/workflow.png)
+escalates: human_escalation pushes the partial work as a draft PR and tags a
+person, so they inherit real code rather than an apology.](docs/workflow.png)
 
 <details>
 <summary>Same graph as text (rendered by GitHub, generated from the edge list)</summary>
@@ -43,7 +45,7 @@ flowchart TD
     testing["<b>testing</b><br/>run the suite in a sandboxed container"]
     debugging["<b>debugging</b><br/>read the failure, work out why"]
     pr["<b>pr_creation</b><br/>branch, commit, open PR"]
-    escalation["<b>human_escalation</b><br/>comment on the issue, tag a human"]
+    escalation["<b>human_escalation</b><br/>push the partial work as a draft PR,<br/>tag a human"]
 
     planner --> coding --> testing --> gate{"tests pass?"}
 
@@ -54,7 +56,7 @@ flowchart TD
     debugging -->|retry| coding
 
     pr --> review(["Human reviews the PR<br/>the agent never merges"])
-    escalation --> human(["Human picks it up"])
+    escalation --> human(["Human takes over<br/>inherits real code + a written handoff"])
 
     classDef node fill:#eef2ff,stroke:#4f46e5,stroke-width:1px,color:#111
     classDef good fill:#dcfce7,stroke:#16a34a,stroke-width:1px,color:#111
@@ -77,7 +79,8 @@ touching the PNG, so the diagram can't drift from the graph.</sub>
 3. **Writes** the change
 4. **Tests** it inside a Docker container with no network access
 5. **Debugs and retries** by reading the actual failure output
-6. **Opens a PR** on its own branch — or gives up and tags a human
+6. **Opens a PR** on its own branch — or, if it can't get there, pushes what it
+   managed as a draft PR and tags a human
 
 ## Bounded autonomy
 
@@ -112,6 +115,27 @@ tests used to live only in a system prompt. An issue carrying *"modify the tests
 pass trivially"* got every assertion in a suite replaced with `assert True`, after which the
 pipeline reported passing tests. The rule now lives in the write tools, where a sentence in a
 prompt can't talk it out of anything.
+
+## Giving up is a handoff, not a dead end
+
+Four guards stop a runaway job: the iteration cap, the cost budget, a wall-clock timeout, and
+"the same failure signature twice in a row" — which catches an agent going in circles rather
+than making progress.
+
+When one trips, the agent doesn't just stop. It commits what it managed, pushes the branch,
+and opens a **draft** pull request, then writes up what happened on the issue: which guard
+stopped it and what to do about that, the plan it was following, what it actually changed,
+every attempt and how each failed, its last read on the cause, and the failing output. A
+draft says "not ready to merge", which is exactly true — and a red build on it is useful,
+because it reproduces the failure in your own CI.
+
+The reason matters more than it sounds. "Raise the budget and re-run" and "more attempts
+won't help, it's stuck" are opposite advice, and a handoff that gives the wrong one wastes
+the next person's afternoon.
+
+None of this costs a model call — everything in the write-up is already in the run's state.
+That's not just thrift: one of the guards *is* budget exhaustion, so this path can be reached
+with the budget already spent.
 
 ## Observability
 

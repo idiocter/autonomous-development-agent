@@ -135,7 +135,7 @@ A(node(1120, 430, 178, 190, GREEN, "git-pull-request", "pr_creation",
        ["Pushes a branch,", "opens the pull request"], [GH_TAG], tsize=19))
 
 A(node(1120, 700, 178, 190, AMBER, "triangle-alert", "human_escalation",
-       ["Explains what it tried,", "tags a human"], [GH_TAG], tsize=16))
+       ["Pushes the partial work", "as a draft PR"], [GH_TAG], tsize=16))
 
 A(node(1470, 200, 360, 165, GREEN, "users", "QA / reviewer",
        ["A person reads the diff"], mono=False))
@@ -144,7 +144,8 @@ A(node(1470, 395, 360, 165, GREEN, "git-merge", "Manual merge",
        ["Only a human can merge —", "the agent has no merge path"], mono=False))
 
 A(node(1470, 700, 360, 190, AMBER, "user-round-check", "Human takes over",
-       ["Picks up the tagged issue"], mono=False))
+       ["Inherits real code and a written",
+        "account of what was tried"], mono=False))
 
 # ── decision diamond ─────────────────────────────────────────────────────────
 A('<path d="M1030,473 L1082,525 L1030,577 L978,525 Z" fill="#fff" stroke="#64748b" stroke-width="2.5"/>')
