@@ -3,8 +3,9 @@
 An AI agent that fixes bugs in your code by itself and opens a pull request for you to review.
 
 You give it a GitHub issue. It reads your codebase, works out a fix, writes the code, runs
-your tests, debugs if they fail, and opens a PR. If it can't solve the problem, it stops and
-asks a human instead of trying forever.
+your tests, debugs if they fail, and opens a PR. If it can't solve the problem it hands off
+rather than grinding away — pushing what it managed as a draft PR, so you inherit real code
+and a written account of what it tried.
 
 ## What it does, step by step
 
@@ -150,8 +151,9 @@ The agent still works without it — just with weaker code search and no saved h
 Docker Desktop isn't open. Start it and wait for the whale icon to settle.
 
 **The agent opened a PR but didn't comment on the issue**
-Your GitHub token is missing the **Issues → Read and write** permission. PRs still work, but
-the agent can't comment or tag issues when it needs human help.
+Your GitHub token is missing the **Issues → Read and write** permission. PRs and branches
+still work — including the draft PR it opens when it gives up — but it can't post the
+write-up explaining what it tried, or tag the issue for a human.
 
 **An error about `anthropic` or `openai` not being installed**
 You switched git branches. Re-run the `uv sync` command from setup — the two branches use
