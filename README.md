@@ -15,7 +15,9 @@ asks a human instead of trying forever.
 5. **Runs your tests** inside a sealed Docker container (no internet, limited memory and CPU)
 6. **Fixes and retries** if tests fail, reading the error to work out what went wrong
 7. **Opens a pull request** on its own branch — it never merges anything itself
-8. **Gives up and tags a human** if it can't get the tests passing
+8. **Hands off to a human** if it can't get the tests passing — it pushes what it
+   managed and opens a draft PR, so you inherit real code and a written account of
+   what it tried, not just an apology
 
 It cannot edit your tests to make them pass — the write tools refuse test files outright, so
 an issue that asks for it gets an error rather than a weakened test suite. It stops if it
@@ -163,6 +165,7 @@ All in `.env`. No code changes needed.
 |---|---|---|
 | `ALLOW_TEST_EDITS` | `false` | lets the agent write to test files. Leave off for anything triggered by an issue a stranger can author |
 | `MAX_ITERATIONS` | `6` | how many times it retries a fix before giving up |
+| `ESCALATION_OPEN_DRAFT_PR` | `true` | when it gives up, open a draft PR with the partial work. Off still pushes the branch |
 | `JOB_COST_BUDGET_USD` | `2.00` | stops the job if it spends more than this |
 | `JOB_TIMEOUT_SECONDS` | `2700` | stops the job after 45 minutes |
 | `PLANNER_MODEL` etc. | `gpt-4o` / `gpt-4o-mini` | which AI model each part uses |
