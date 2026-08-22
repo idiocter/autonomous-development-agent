@@ -319,6 +319,41 @@ def changed_files(repo: git.Repo, base_branch: str) -> list[str]:
     return [line for line in out.splitlines() if line.strip()]
 
 
+def has_substantive_change(repo_path: str, base_branch: str) -> bool:
+    """Did the working tree actually change against the base, ignoring whitespace?
+
+    A green suite is not evidence the issue was addressed. The existing tests
+    describe the *old* behaviour, so they keep passing when the agent does
+    nothing -- and "nothing" includes deleting a blank line, which is enough
+    for commit_all to find something to commit and for the run to report
+    success. That exact shape shipped a no-op PR.
+
+    Returns True when it can't tell (no git repo, detached base, unreadable
+    workspace). Blocking a legitimate run over a failed inspection would be a
+    worse failure than the one this guards against -- and local runs have no
+    git repo at all.
+    """
+    try:
+        repo = git.Repo(repo_path)
+        # Both flags are needed: --ignore-all-space only ignores whitespace
+        # *within* a line, so deleting a blank line still reads as a real
+        # deletion -- which is exactly the no-op that shipped as a success.
+        diff = repo.git.diff(
+            "--ignore-all-space", "--ignore-blank-lines", "--name-only", base_branch
+        )
+        if diff.strip():
+            return True
+        # A brand-new file is substantive even though it has no diff against
+        # base. Artifacts don't count -- the sandbox drops __pycache__ and
+        # friends into the tree on every test run.
+        return any(
+            not (f.endswith((".pyc", ".pyo")) or "__pycache__" in f or f.startswith("."))
+            for f in repo.untracked_files
+        )
+    except Exception:  # noqa: BLE001 -- can't tell, so don't block
+        return True
+
+
 def _fence(text: str, limit: int = 3000) -> str:
     """Fence untrusted output so its own backticks can't break out of the block.
 
@@ -364,6 +399,17 @@ _GIVE_UP_WORDING: dict[str, tuple[str, str]] = {
         (
             "Here's how far it got. If the failures were still changing between "
             "attempts (see the table), raising `MAX_ITERATIONS` may be enough."
+        ),
+    ),
+    "no_change": (
+        "The tests pass, but I didn't actually change anything.",
+        (
+            "The existing tests describe the behaviour that was already there, so "
+            "they pass whether or not I did the work — I'm not opening a PR on the "
+            "strength of that. Either this is already fixed and the issue can be "
+            "closed, or I failed to make the change and nothing caught it. The plan "
+            "below is what I intended to do; comparing it against the diff (there "
+            "isn't one) should tell you which."
         ),
     ),
 }
@@ -422,6 +468,10 @@ def build_escalation_comment(
 
     if not had_changes:
         out.append("I stopped before making any file changes, so there's no code to hand over.")
+    elif reason == "no_change":
+        out.append(
+            "There's nothing to hand over — once whitespace is ignored, the diff is empty."
+        )
     elif pr_url:
         out.append("The work so far is pushed and open as a draft PR. It does **not** pass tests.")
     elif push_error:

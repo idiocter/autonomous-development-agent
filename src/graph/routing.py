@@ -15,12 +15,17 @@ from typing import Literal
 
 from src.agents.usage import is_over_budget
 from src.graph.state import AgentState, GiveUpReason, TestResult
+from src.tools.github_tools import has_substantive_change
 
 RouteAfterTest = Literal["pass", "retry", "give_up"]
 
 
 def give_up_reason(state: AgentState) -> GiveUpReason | None:
-    """Which guard would stop this run, or None if it should keep going.
+    """Which guard would stop this run, or None if it should carry on.
+
+    Covers both halves of the decision. When the tests fail it's the familiar
+    question of whether to retry; when they *pass* there is still one reason
+    not to ship, which is that nothing was actually changed.
 
     Single source of truth for the give-up predicate. It's called from two
     places: the conditional edge below, which only needs the yes/no, and
@@ -38,6 +43,19 @@ def give_up_reason(state: AgentState) -> GiveUpReason | None:
     job_runner.py), and no model call happens between this edge and the
     escalation node, so the answer can't change underneath us.
     """
+    result = state["test_result"]
+
+    if result is not None and result["passed"]:
+        # Green tests mean "the suite still passes", not "the issue is fixed" --
+        # the suite describes the behaviour that existed before the run, so it
+        # keeps passing when the agent does nothing. Shipping that as a success
+        # is worse than giving up, because a green PR doesn't get re-read.
+        workspace = state.get("repo_local_path")
+        base = state.get("base_branch")
+        if workspace and base and not has_substantive_change(workspace, base):
+            return "no_change"
+        return None
+
     if is_over_budget():
         return "over_budget"
     if _is_repeating_failure(state["test_history"]):
@@ -51,9 +69,9 @@ def route_after_test(state: AgentState) -> RouteAfterTest:
     result = state["test_result"]
     assert result is not None, "route_after_test called before testing_node ran"
 
-    if result["passed"]:
-        return "pass"
-    return "give_up" if give_up_reason(state) is not None else "retry"
+    if give_up_reason(state) is not None:
+        return "give_up"
+    return "pass" if result["passed"] else "retry"
 
 
 def _is_repeating_failure(history: list[TestResult]) -> bool:

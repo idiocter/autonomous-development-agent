@@ -184,7 +184,12 @@ def _hand_off(state: AgentState, result: dict[str, Any]) -> dict[str, Any]:
             injection_findings=state.get("injection_findings"),
         )
 
-    if had_changes and push_error is None and settings.escalation_open_draft_pr:
+    # A no_change run has nothing worth reviewing -- opening a PR whose diff is
+    # a deleted blank line is the noise this guard exists to prevent. The issue
+    # comment still explains what happened.
+    worth_a_pr = had_changes and reason != "no_change"
+
+    if worth_a_pr and push_error is None and settings.escalation_open_draft_pr:
         title = f"[needs human] Fix #{state['issue_number']}: {state['issue_title']}"[:72]
         pr = _open_draft_pr(gh_repo, title=title, body=render(None, None),
                             head=work_branch, base=state["base_branch"])
