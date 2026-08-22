@@ -87,10 +87,17 @@ def main() -> None:
     final_state = asyncio.run(run_job(initial_state, triggered_by="manual:cli"))
 
     print(f"\n--- final status: {final_state['status']} ---")
-    if final_state["pr_url"]:
+    # Status first: a give-up now also returns a pr_url (the draft PR holding
+    # the partial work), so checking pr_url first would report it as a success
+    # and swallow the escalation notice entirely.
+    if final_state["status"] == "needs_human":
+        print(f"Handed off to a human on issue #{args.issue} -- see the comment there.")
+        if final_state["pr_url"]:
+            print(f"Partial work: {final_state['pr_url']} (draft)")
+        elif final_state.get("work_branch"):
+            print(f"Partial work: branch {final_state['work_branch']}")
+    elif final_state["pr_url"]:
         print(f"PR: {final_state['pr_url']}")
-    elif final_state["status"] == "needs_human":
-        print(f"Escalated to a human on issue #{args.issue} -- see the comment there.")
 
 
 if __name__ == "__main__":
