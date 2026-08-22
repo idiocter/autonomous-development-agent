@@ -39,6 +39,12 @@ JobStatus = Literal[
     "needs_human",
 ]
 
+# Which loop-safety guard stopped the run. All three route to the same graph
+# edge, so this exists purely so the escalation comment can tell the human
+# which one tripped -- "you ran out of money" and "it's stuck on one error"
+# call for completely different next steps.
+GiveUpReason = Literal["over_budget", "repeating_failure", "iteration_cap"]
+
 
 class AgentState(TypedDict):
     # Immutable job context
