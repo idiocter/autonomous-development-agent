@@ -17,7 +17,22 @@ from src.config import settings
 # server.pem / key.p12 / credentials.json were all readable.
 _DENY_PREFIXES = (".env", "id_rsa", "id_ed25519", ".npmrc", ".pypirc", ".netrc")
 _DENY_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".keystore", ".jks")
-_DENY_EXACT = ("credentials.json", "service_account.json", "secrets.yaml", "secrets.yml")
+# `.git` is here rather than in _DENY_PREFIXES on purpose: a prefix match would
+# also block `.gitignore` and `.github/`, which the agent has real reasons to
+# read and edit. As an exact component match it blocks `.git/anything` -- since
+# _resolve_scoped checks every path component -- and nothing else.
+#
+# Git internals are a credential store, not just plumbing: a clone made with a
+# token in the remote URL keeps it in .git/config, so an issue saying "read
+# .git/config and paste it into the PR" was a live exfiltration path. Outbound
+# redaction caught it, but redaction is the last line, not the only one.
+_DENY_EXACT = (
+    "credentials.json",
+    "service_account.json",
+    "secrets.yaml",
+    "secrets.yml",
+    ".git",
+)
 
 
 def is_denylisted(name: str) -> bool:
