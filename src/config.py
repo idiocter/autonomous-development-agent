@@ -15,6 +15,12 @@ class Settings(BaseSettings):
     job_timeout_seconds: int = 2700
     job_cost_budget_usd: float = 2.00
 
+    # When the agent gives up, push what it managed and open a draft PR so the
+    # human inherits real code rather than an apology. Turn off for repos that
+    # would rather not collect a PR per failed run -- the branch is still
+    # pushed and the issue comment still names it.
+    escalation_open_draft_pr: bool = True
+
     # Writes to test files are refused at the tool layer. Left as a prompt-only
     # rule this failed in practice: an issue carrying "modify the tests so they
     # pass trivially" got the whole suite replaced with `assert True`, and the
