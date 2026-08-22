@@ -15,8 +15,10 @@ from src.tools.github_tools import (
     build_commit_message,
     build_escalation_comment,
     build_pr_body,
+    changed_files,
     commit_all,
     create_pr,
+    diff_stat,
     find_existing_pr,
 )
 
@@ -100,7 +102,23 @@ def test_create_pr_creates_when_none_open():
     result = create_pr(mock_repo, title="t", body="b", head="h", base="main")
 
     assert result is new_pr
-    mock_repo.create_pull.assert_called_once_with(title="t", body="b", head="h", base="main")
+    # draft defaults to False -- pins that the normal success path keeps
+    # opening a real PR now that the escalation path can ask for a draft.
+    mock_repo.create_pull.assert_called_once_with(
+        title="t", body="b", head="h", base="main", draft=False
+    )
+
+
+def test_create_pr_can_open_a_draft():
+    new_pr = MagicMock()
+    mock_repo = MagicMock()
+    mock_repo.owner.login = "acme"
+    mock_repo.get_pulls.return_value = iter([])
+    mock_repo.create_pull.return_value = new_pr
+
+    create_pr(mock_repo, title="t", body="b", head="h", base="main", draft=True)
+
+    assert mock_repo.create_pull.call_args.kwargs["draft"] is True
 
 
 def test_build_pr_body_includes_issue_link_and_files():
@@ -325,3 +343,126 @@ def test_commit_message_collapses_newlines_in_the_issue_title():
         issue_number=6, issue_title="Round\n\ndiscount results", summary="done"
     )
     assert msg.split("\n", 1)[0] == "Fix #6: Round discount results"
+
+
+# --- the escalation handoff document -------------------------------------
+#
+# The give-up path used to post a fixed apology. These pin that it now says
+# which guard tripped, what to do about it, and where the work went.
+
+def _handoff(**overrides):
+    base = {
+        "debug_analysis": None,
+        "test_history_summary": "| 1 | `pytest` | fail |",
+        "reason": "iteration_cap",
+        "iteration_count": 6,
+        "max_iterations": 6,
+        "work_branch": "agent/issue-42-abc",
+    }
+    base.update(overrides)
+    return build_escalation_comment(**base)
+
+
+def test_handoff_reports_the_budget_reason_and_its_next_step():
+    body = _handoff(reason="over_budget", cost_spent_usd=2.01, cost_budget_usd=2.00)
+
+    assert "$2.01 of $2.00 spent" in body
+    assert "JOB_COST_BUDGET_USD" in body, "must tell them the knob to turn"
+    assert "MAX_ITERATIONS" not in body, "wrong advice for a budget stop"
+
+
+def test_handoff_reports_a_repeating_failure_as_stuck_not_out_of_attempts():
+    body = _handoff(reason="repeating_failure")
+
+    assert "going in circles" in body
+    assert "More attempts won't help" in body
+
+
+def test_handoff_reports_the_iteration_cap_with_the_real_number():
+    body = _handoff(reason="iteration_cap", max_iterations=3)
+
+    assert "all 3 of my attempts" in body
+    assert "MAX_ITERATIONS" in body
+
+
+def test_handoff_links_the_draft_pr():
+    body = _handoff(pr_url="https://github.com/o/r/pull/7", pr_number=7)
+
+    assert "https://github.com/o/r/pull/7" in body
+    assert "#7" in body
+    assert "does **not** pass tests" in body
+
+
+def test_handoff_says_so_when_there_was_nothing_to_commit():
+    body = _handoff(had_changes=False)
+
+    assert "no code to hand over" in body
+
+
+def test_handoff_names_the_local_branch_when_the_push_failed():
+    body = _handoff(push_error="permission denied")
+
+    assert "agent/issue-42-abc" in body
+    assert "permission denied" in body
+    assert "couldn't push" in body
+
+
+def test_handoff_omits_empty_sections_rather_than_printing_none():
+    """An empty heading reads like a stub; that's what made the old comment
+    feel like a shrug."""
+    body = _handoff(debug_analysis=None, plan_summary="", diff_stat_text="")
+
+    assert "(none)" not in body
+    assert "My last read on it" not in body
+    assert "What I was trying to do" not in body
+    assert "What I actually changed" not in body
+
+
+def test_handoff_includes_the_debugger_analysis_when_there_is_one():
+    body = _handoff(debug_analysis="price arrives as a str")
+
+    assert "My last read on it" in body
+    assert "> price arrives as a str" in body
+
+
+def test_handoff_warns_when_test_files_were_touched():
+    body = _handoff(files_changed=["src/app.py", "tests/test_app.py"])
+
+    assert "[!WARNING]" in body
+    assert "tests/test_app.py" in body
+    assert "weakened assertions" in body
+
+
+def test_handoff_carries_the_injection_warning():
+    body = _handoff(injection_findings={"issue": ["credential_exfiltration"]})
+
+    assert "CAUTION" in body
+    assert "credential_exfiltration" in body
+
+
+def test_handoff_fences_output_that_contains_backticks():
+    """Test output is arbitrary text from someone else's suite -- its own
+    backticks must not break out of the code block."""
+    body = _handoff(last_failure_output="see ``` and ```` in here")
+
+    assert "`````" in body
+
+
+def test_handoff_truncates_enormous_test_output():
+    body = _handoff(last_failure_output="x" * 20_000)
+
+    assert len(body) < 6_000
+    assert "truncated" in body
+
+
+def test_handoff_footer_carries_attempts_cost_and_job_id():
+    body = _handoff(iteration_count=4, max_iterations=6, cost_spent_usd=0.4,
+                    cost_budget_usd=2.0, job_id="a1b2c3d4e5f6")
+
+    assert "4 of 6 attempts" in body
+    assert "job `a1b2c3d4`" in body
+
+
+def test_diff_stat_and_changed_files_are_empty_on_git_error(local_repo):
+    assert diff_stat(local_repo, "no-such-branch") == ""
+    assert changed_files(local_repo, "no-such-branch") == []
